@@ -1,5 +1,5 @@
 """
-OpenAI-compatible STT server wrapping NVIDIA's nemotron-speech-streaming-en-0.6b model.
+OpenAI-compatible STT server wrapping NVIDIA's Nemotron ASR streaming model.
 
 Usage:
     python server.py [--host 0.0.0.0] [--port 8000]
@@ -26,8 +26,10 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 logger = logging.getLogger("stt-server")
 logging.basicConfig(level=logging.INFO)
 
-MODEL_NAME = os.getenv("NEMOTRON_MODEL_NAME", "nvidia/nemotron-speech-streaming-en-0.6b")
-MODEL_ID = os.getenv("NEMOTRON_MODEL_ID", "nemotron-speech-streaming")
+MODEL_NAME = os.getenv("NEMOTRON_MODEL_NAME", "nvidia/nemotron-3.5-asr-streaming-0.6b")
+MODEL_ID = os.getenv("NEMOTRON_MODEL_ID", "nemotron-3.5-asr-streaming")
+DEFAULT_LANGUAGE = os.getenv("NEMOTRON_LANGUAGE", "zh-CN")
+REQUESTED_DEVICE = os.getenv("NEMOTRON_DEVICE", os.getenv("DEVICE", "")).strip().lower()
 TARGET_SAMPLE_RATE = 16000
 
 asr_model = None
@@ -41,7 +43,20 @@ def load_model():
     asr_model = nemo_asr.models.ASRModel.from_pretrained(MODEL_NAME)
     asr_model.eval()
 
-    if torch.cuda.is_available():
+    if REQUESTED_DEVICE == "cpu":
+        logger.info("Model on CPU")
+    elif REQUESTED_DEVICE == "cuda" and torch.cuda.is_available():
+        asr_model = asr_model.cuda()
+        logger.info("Model on CUDA")
+    elif REQUESTED_DEVICE == "mps" and torch.backends.mps.is_available():
+        try:
+            asr_model = asr_model.to("mps")
+            logger.info("Model on MPS")
+        except Exception:
+            logger.info("MPS unavailable for this model, using CPU")
+    elif REQUESTED_DEVICE and REQUESTED_DEVICE not in {"auto", ""}:
+        logger.warning("Requested NEMOTRON_DEVICE=%s is unavailable, using CPU", REQUESTED_DEVICE)
+    elif torch.cuda.is_available():
         asr_model = asr_model.cuda()
         logger.info("Model on CUDA")
     elif torch.backends.mps.is_available():
@@ -244,7 +259,7 @@ async def transcribe(
     model: str = Form(MODEL_ID),
     response_format: Optional[str] = Form("json"),
     stream: Optional[str] = Form(None),
-    language: Optional[str] = Form(None),
+    language: Optional[str] = Form(DEFAULT_LANGUAGE),
     temperature: Optional[str] = Form(None),
     prompt: Optional[str] = Form(None),
 ):
@@ -284,7 +299,7 @@ async def transcribe(
             content={
                 "text": text,
                 "task": "transcribe",
-                "language": "en",
+                "language": DEFAULT_LANGUAGE,
                 "duration": None,
             }
         )

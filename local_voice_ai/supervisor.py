@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 from dataclasses import dataclass, field
+from collections import deque
 from typing import Awaitable, Callable, Optional
 
 import httpx
@@ -41,6 +42,7 @@ class _Child:
     ready: bool = False
     pump_task: Optional[asyncio.Task] = None
     watch_task: Optional[asyncio.Task] = None
+    recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=40))
 
 
 class Supervisor:
@@ -150,7 +152,9 @@ class Supervisor:
                 line = await stream.readline()
                 if not line:
                     return
-                logger.log(level, "%s %s", prefix, line.decode(errors="replace").rstrip())
+                decoded = line.decode(errors="replace").rstrip()
+                child.recent_output.append(decoded)
+                logger.log(level, "%s %s", prefix, decoded)
 
         await asyncio.gather(
             pump(child.process.stdout, logging.INFO),
@@ -170,8 +174,16 @@ class Supervisor:
             if self.stopping:
                 raise RuntimeError(f"{child.spec.name}: aborted during readiness wait")
             if child.process and child.process.returncode is not None:
+                if child.pump_task:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(child.pump_task), timeout=1.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+                recent = "\n".join(child.recent_output)
+                suffix = f"\nRecent output:\n{recent}" if recent else ""
                 raise RuntimeError(
                     f"{child.spec.name}: exited (rc={child.process.returncode}) before ready"
+                    f"{suffix}"
                 )
             try:
                 resp = await self._http.get(child.spec.ready_url)

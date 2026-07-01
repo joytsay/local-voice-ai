@@ -59,6 +59,7 @@ class Config:
     llama_model: str = "qwen3-4b"
     llama_api_key: str = "no-key-needed"
     llama_hf_repo: str = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
+    llama_model_path: Optional[str] = None
     llama_model_alias: str = "qwen3-4b"
     llama_ctx_size: int = 16384
     llama_n_gpu_layers: int = 0
@@ -70,23 +71,30 @@ class Config:
     stt_base_url: str = "http://127.0.0.1:8000/v1"
     stt_model: str = "nemotron-speech-streaming"
     stt_api_key: str = "no-key-needed"
+    stt_language: str = "zh"
     stt_bind_port: int = 8000
     manage_stt: bool = True
 
     # Nemotron-specific
-    nemotron_model_name: str = "nvidia/nemotron-speech-streaming-en-0.6b"
-    nemotron_model_id: str = "nemotron-speech-streaming"
+    nemotron_model_name: str = "nvidia/nemotron-3.5-asr-streaming-0.6b"
+    nemotron_model_id: str = "nemotron-3.5-asr-streaming"
+    nemotron_language: str = "zh-CN"
 
     # Whisper (vox-box) specific
     voxbox_hf_repo_id: str = "Systran/faster-whisper-small"
     voxbox_device: str = "cpu"
 
-    # --- TTS (Kokoro) ---------------------------------------------------
+    # --- TTS (BlueMagpie by default, Kokoro fallback) -------------------
+    tts_provider: str = "bluemagpie"  # "bluemagpie" | "kokoro"
     tts_base_url: str = "http://127.0.0.1:8880/v1"
-    tts_voice: str = "af_nova"
+    tts_voice: str = "chinese_female"
     tts_api_key: str = "no-key-needed"
     tts_bind_port: int = 8880
     manage_tts: bool = True
+
+    # BlueMagpie-specific
+    bluemagpie_model_name: str = "OpenFormosa/BlueMagpie-TTS"
+    bluemagpie_model_id: str = "bluemagpie-tts"
 
     # --- Device ---------------------------------------------------------
     device: str = "cpu"  # cpu | cuda | mps
@@ -114,7 +122,7 @@ class Config:
         default_stt_model = (
             "Systran/faster-whisper-small"
             if stt_provider == "whisper"
-            else "nemotron-speech-streaming"
+            else cls.nemotron_model_id
         )
 
         return cls(
@@ -135,6 +143,7 @@ class Config:
             llama_model=os.getenv("LLAMA_MODEL", cls.llama_model),
             llama_api_key=os.getenv("LLAMA_API_KEY", cls.llama_api_key),
             llama_hf_repo=os.getenv("LLAMA_HF_REPO", cls.llama_hf_repo),
+            llama_model_path=os.getenv("LLAMA_MODEL_PATH"),
             llama_model_alias=os.getenv("LLAMA_MODEL_ALIAS", cls.llama_model_alias),
             llama_ctx_size=int(os.getenv("LLAMA_CTX_SIZE", str(cls.llama_ctx_size))),
             llama_n_gpu_layers=int(os.getenv("LLAMA_N_GPU_LAYERS", str(cls.llama_n_gpu_layers))),
@@ -145,18 +154,23 @@ class Config:
             stt_base_url=stt_base_url,
             stt_model=os.getenv("STT_MODEL", default_stt_model),
             stt_api_key=os.getenv("STT_API_KEY", cls.stt_api_key),
+            stt_language=os.getenv("STT_LANGUAGE", cls.stt_language),
             stt_bind_port=int(os.getenv("STT_BIND_PORT", str(cls.stt_bind_port))),
             manage_stt=_env_bool("MANAGE_STT", _is_loopback(stt_base_url)),
             nemotron_model_name=os.getenv("NEMOTRON_MODEL_NAME", cls.nemotron_model_name),
             nemotron_model_id=os.getenv("NEMOTRON_MODEL_ID", cls.nemotron_model_id),
+            nemotron_language=os.getenv("NEMOTRON_LANGUAGE", cls.nemotron_language),
             voxbox_hf_repo_id=os.getenv("VOXBOX_HF_REPO_ID", cls.voxbox_hf_repo_id),
             voxbox_device=os.getenv("VOXBOX_DEVICE", cls.voxbox_device),
             #
+            tts_provider=os.getenv("TTS_PROVIDER", cls.tts_provider).lower(),
             tts_base_url=tts_base_url,
             tts_voice=os.getenv("TTS_VOICE", cls.tts_voice),
             tts_api_key=os.getenv("TTS_API_KEY", cls.tts_api_key),
             tts_bind_port=int(os.getenv("TTS_BIND_PORT", str(cls.tts_bind_port))),
             manage_tts=_env_bool("MANAGE_TTS", _is_loopback(tts_base_url)),
+            bluemagpie_model_name=os.getenv("BLUEMAGPIE_MODEL_NAME", cls.bluemagpie_model_name),
+            bluemagpie_model_id=os.getenv("BLUEMAGPIE_MODEL_ID", cls.bluemagpie_model_id),
             #
             device=os.getenv("DEVICE", cls.device).lower(),
             log_level=os.getenv("LOG_LEVEL", cls.log_level).upper(),
@@ -165,16 +179,20 @@ class Config:
     def agent_env(self) -> dict[str, str]:
         """Environment variables to pass to the agent worker subprocess."""
         return {
-            "LIVEKIT_URL": self.livekit_url,
+            "LIVEKIT_URL": os.getenv("LIVEKIT_AGENT_URL", self.livekit_url),
             "LIVEKIT_API_KEY": self.livekit_api_key,
             "LIVEKIT_API_SECRET": self.livekit_api_secret,
             "LLAMA_BASE_URL": self.llama_base_url,
             "LLAMA_MODEL": self.llama_model,
             "LLAMA_API_KEY": self.llama_api_key,
+            **({"LLAMA_MODEL_PATH": self.llama_model_path} if self.llama_model_path else {}),
             "STT_PROVIDER": self.stt_provider,
             "STT_BASE_URL": self.stt_base_url,
             "STT_MODEL": self.stt_model,
             "STT_API_KEY": self.stt_api_key,
+            "STT_LANGUAGE": self.stt_language,
+            "NEMOTRON_LANGUAGE": self.nemotron_language,
+            "TTS_PROVIDER": self.tts_provider,
             "TTS_BASE_URL": self.tts_base_url,
             "TTS_VOICE": self.tts_voice,
             "TTS_API_KEY": self.tts_api_key,

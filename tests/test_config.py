@@ -98,7 +98,9 @@ class TestSttProviderDefaults:
     def test_nemotron_default_model(self) -> None:
         cfg = Config.from_env()
         assert cfg.stt_provider == "nemotron"
-        assert cfg.stt_model == "nemotron-speech-streaming"
+        assert cfg.stt_model == "nemotron-3.5-asr-streaming"
+        assert cfg.nemotron_model_name == "nvidia/nemotron-3.5-asr-streaming-0.6b"
+        assert cfg.nemotron_language == "zh-CN"
 
     def test_whisper_default_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("STT_PROVIDER", "whisper")
@@ -120,6 +122,22 @@ class TestAgentEnv:
             "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
             "LLAMA_BASE_URL", "LLAMA_MODEL", "LLAMA_API_KEY",
             "STT_BASE_URL", "STT_MODEL", "STT_API_KEY", "STT_PROVIDER",
+            "NEMOTRON_LANGUAGE", "TTS_PROVIDER",
             "TTS_BASE_URL", "TTS_VOICE", "TTS_API_KEY",
         ):
             assert required in env, f"agent_env missing {required}"
+
+
+class TestTtsProviderDefaults:
+    def test_bluemagpie_default(self) -> None:
+        cfg = Config.from_env()
+        assert cfg.tts_provider == "bluemagpie"
+        assert cfg.tts_voice == "female_voice"
+        assert cfg.bluemagpie_model_name == "OpenFormosa/BlueMagpie-TTS"
+
+    def test_kokoro_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TTS_PROVIDER", "kokoro")
+        monkeypatch.setenv("TTS_VOICE", "af_nova")
+        cfg = Config.from_env()
+        assert cfg.tts_provider == "kokoro"
+        assert cfg.tts_voice == "af_nova"

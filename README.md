@@ -30,13 +30,21 @@ Open <http://localhost:8080> and click the start button.
 The first build pulls upstream binaries (llama-server, livekit-server) and downloads the Nemotron + LLM weights on first request — expect tens of GB on first boot.
 
 ### GPU (NVIDIA)
-
 ```bash
-LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda \
+LLAMA_MODEL_PATH=/models/llama.cpp/Qwen3-4B-Instruct-2507-UD-IQ1_S.gguf \
+LLAMA_MODEL=qwen3-4b \
+LLAMA_MODEL_ALIAS=qwen3-4b \
+STT_PROVIDER=whisper \
+STT_LANGUAGE=zh \
+VOXBOX_DEVICE=cuda \
+BLUEMAGPIE_DEVICE=cuda \
+BLUEMAGPIE_MODEL_NAME=/models/hf/OpenFormosa/BlueMagpie-TTS \
+LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b7205 \
 PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
-LLAMA_N_GPU_LAYERS=35 \
-docker compose up --build
+GPU_LLAMA_N_GPU_LAYERS=3 \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose up --no-build
 ```
 
 ### Apple Silicon
@@ -76,7 +84,7 @@ cd frontend && pnpm install && pnpm run dev
 │  ├── child: livekit-server     (skipped if LIVEKIT_URL external) │
 │  ├── child: llama-server       (skipped if LLAMA_BASE_URL ext.)  │
 │  ├── child: nemotron | whisper (skipped if STT_BASE_URL ext.)    │
-│  ├── child: kokoro             (skipped if TTS_BASE_URL ext.)    │
+│  ├── child: bluemagpie | kokoro (skipped if TTS_BASE_URL ext.)   │
 │  ├── child: livekit-agents worker                                │
 │  └── in-process: FastAPI on :8080                                 │
 │        ├── POST /api/connection-details  (token minting)         │
@@ -96,6 +104,7 @@ cd frontend && pnpm install && pnpm run dev
 │  ├─ agent.py             # LiveKit Agents worker
 │  └─ services/
 │     ├─ nemotron/server.py
+│     ├─ bluemagpie/server.py
 │     └─ kokoro/server.py
 ├─ frontend/               # Next.js (configured for static export)
 ├─ Dockerfile              # multi-stage build
@@ -109,8 +118,8 @@ See `.env` for the full list. The most important ones:
 
 - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — local-default; override for cloud.
 - `LLAMA_BASE_URL`, `LLAMA_MODEL`, `LLAMA_HF_REPO`, `LLAMA_N_GPU_LAYERS`
-- `STT_PROVIDER` (`nemotron`|`whisper`), `STT_BASE_URL`, `STT_MODEL`
-- `TTS_BASE_URL`, `TTS_VOICE`
+- `STT_PROVIDER` (`nemotron`|`whisper`), `STT_BASE_URL`, `STT_MODEL`, `NEMOTRON_LANGUAGE`
+- `TTS_PROVIDER` (`bluemagpie`|`kokoro`), `TTS_BASE_URL`, `TTS_VOICE`
 - `WEB_PORT` (default `8080`)
 - `MANAGE_LIVEKIT`, `MANAGE_LLAMA`, `MANAGE_STT`, `MANAGE_TTS` — explicit overrides for the auto-detected "is the URL external?" logic.
 
@@ -118,7 +127,8 @@ See `.env` for the full list. The most important ones:
 
 - LiveKit: <https://livekit.io/>
 - LiveKit Agents: <https://docs.livekit.io/agents/>
-- NVIDIA Nemotron Speech: <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>
+- NVIDIA Nemotron 3.5 ASR: <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>
+- OpenFormosa BlueMagpie TTS: <https://huggingface.co/OpenFormosa/BlueMagpie-TTS>
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>
 - Kokoro TTS: <https://github.com/hexgrad/kokoro>
 - VoxBox (Whisper fallback): <https://pypi.org/project/vox-box/>

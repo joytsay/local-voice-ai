@@ -1,0 +1,45 @@
+services:
+  app:
+    command:
+      - /bin/sh
+      - -lc
+      - |-
+        export PATH="/models/python/bin:$PATH"
+        mkdir -p /models/src /models/python
+        if ! python3 -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('bluemagpie') else 1)"; then
+        python3 - <<'PY'
+        import os, urllib.request, zipfile
+
+        sources = {
+            "BlueMagpie-TTS-main": "https://github.com/OpenFormosa/BlueMagpie-TTS/archive/refs/heads/main.zip",
+            "Barbet-main": "https://github.com/OpenFormosa/Barbet/archive/refs/heads/main.zip",
+        }
+        for dirname, url in sources.items():
+            target = f"/models/src/{dirname}"
+            if os.path.isdir(target):
+                continue
+            archive = f"/tmp/{dirname}.zip"
+            urllib.request.urlretrieve(url, archive)
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall("/models/src")
+        PY
+        fi;
+        if [ "${STT_PROVIDER:-nemotron}" = "whisper" ] && ! command -v vox-box >/dev/null 2>&1; then
+        python3 -m pip install --no-cache-dir --no-deps --target /models/python vox-box;
+        fi;
+        if [ "${STT_PROVIDER:-nemotron}" = "whisper" ] && ! python3 -c "import faster_whisper" >/dev/null 2>&1; then
+        python3 -m pip install --no-cache-dir --no-deps --target /models/python faster-whisper;
+        fi;
+        if [ "${STT_PROVIDER:-nemotron}" = "whisper" ] && ! python3 -c "import ctranslate2" >/dev/null 2>&1; then
+        python3 -m pip install --no-cache-dir --no-deps --target /models/python ctranslate2;
+        fi;
+        if [ "${STT_PROVIDER:-nemotron}" = "whisper" ] && ! python3 -c "import modelscope" >/dev/null 2>&1; then
+        python3 -m pip install --no-cache-dir --target /models/python "modelscope";
+        fi;
+        python3 -m local_voice_ai serve
+    environment:
+      PYTHONPATH: /models/src/BlueMagpie-TTS-main/src:/models/src/Barbet-main/src:/models/python:/app
+    volumes:
+      - ./local_voice_ai:/app/local_voice_ai:ro
+      - ./phonebook.csv:/app/phonebook.csv:ro
+      - ./models/python:/models/python

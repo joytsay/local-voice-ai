@@ -4,9 +4,20 @@ services:
       context: .
       args:
         # CPU is the default. For GPU:
-        #   docker compose build --build-arg LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda \
-        #                       --build-arg PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
-        #                       --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+          # LLAMA_MODEL_PATH=/models/llama.cpp/Qwen3-4B-Instruct-2507-UD-IQ1_S.gguf \
+          # LLAMA_MODEL=qwen3-4b \
+          # LLAMA_MODEL_ALIAS=qwen3-4b \
+          # STT_PROVIDER=whisper \
+          # STT_LANGUAGE=zh \
+          # VOXBOX_DEVICE=cuda \
+          # BLUEMAGPIE_DEVICE=cuda \
+          # BLUEMAGPIE_MODEL_NAME=/models/hf/OpenFormosa/BlueMagpie-TTS \
+          # LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b7205 \
+          # PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
+          # TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+          # GPU_LLAMA_N_GPU_LAYERS=3 \
+          # COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+          # docker compose up --no-build
         LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
         LIVEKIT_IMAGE: ${LIVEKIT_IMAGE:-livekit/livekit-server:latest}
         PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
@@ -15,9 +26,19 @@ services:
       - .env
     environment:
       LIVEKIT_URL: ${LIVEKIT_URL:-ws://127.0.0.1:7880}
+      LIVEKIT_AGENT_URL: ${LIVEKIT_AGENT_URL:-ws://127.0.0.1:7880}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
-      STT_PROVIDER: ${STT_PROVIDER:-nemotron}
+      LIVEKIT_NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
+      STT_PROVIDER: ${STT_PROVIDER:-whisper}
+      STT_LANGUAGE: ${STT_LANGUAGE:-auto}
+      NEMOTRON_LANGUAGE: ${NEMOTRON_LANGUAGE:-zh-CN}
+      TTS_PROVIDER: ${TTS_PROVIDER:-bluemagpie}
+      TTS_VOICE: ${TTS_VOICE:-chinese_female}
+      BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cpu}
+      BLUEMAGPIE_FORCE_VOICE: ${BLUEMAGPIE_FORCE_VOICE:-chinese_female}
+      BLUEMAGPIE_CFG_VALUE: ${BLUEMAGPIE_CFG_VALUE:-2.8}
+      BLUEMAGPIE_SEED: ${BLUEMAGPIE_SEED:-1729}
       LLAMA_HF_REPO: ${LLAMA_HF_REPO:-unsloth/Qwen3-4B-Instruct-2507-GGUF}
       LLAMA_MODEL: ${LLAMA_MODEL:-qwen3-4b}
       LLAMA_MODEL_ALIAS: ${LLAMA_MODEL_ALIAS:-qwen3-4b}
@@ -33,7 +54,9 @@ services:
       # because LiveKit advertises this exact port in its ICE candidates.
       - "${LIVEKIT_UDP_PORT:-7882}:7882/udp"
     volumes:
+      - ./local_voice_ai:/app/local_voice_ai:ro
       - /home/joy/Git/local-voice-ai/models:/models
+      - /home/joy/Git/local-voice-ai/models/voxbox:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz > /dev/null"]
       interval: 10s

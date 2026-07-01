@@ -60,18 +60,24 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
     # --- llama.cpp server (C++ binary) -------------------------------
     if cfg.manage_llama:
         llama_bin = os.getenv("LLAMA_BIN", "llama-server")
+        llama_argv = [
+            llama_bin,
+            "--host", "127.0.0.1",
+            "--port", str(cfg.llama_bind_port),
+            "--ctx-size", str(cfg.llama_ctx_size),
+            "--n-gpu-layers", str(cfg.llama_n_gpu_layers),
+        ]
+        if cfg.llama_model_path:
+            llama_argv.extend(["--model", cfg.llama_model_path])
+        else:
+            llama_argv.extend([
+                "--hf-repo", cfg.llama_hf_repo,
+                "--alias", cfg.llama_model_alias,
+            ])
         specs.append(
             ChildSpec(
                 name="llama",
-                argv=[
-                    llama_bin,
-                    "--host", "127.0.0.1",
-                    "--port", str(cfg.llama_bind_port),
-                    "--hf-repo", cfg.llama_hf_repo,
-                    "--alias", cfg.llama_model_alias,
-                    "--ctx-size", str(cfg.llama_ctx_size),
-                    "--n-gpu-layers", str(cfg.llama_n_gpu_layers),
-                ],
+                argv=llama_argv,
                 env={"HF_HOME": os.getenv("HF_HOME", "/models"), "XDG_CACHE_HOME": os.getenv("XDG_CACHE_HOME", "/models")},
                 ready_url=f"http://127.0.0.1:{cfg.llama_bind_port}/v1/models",
                 ready_timeout=900.0,  # first-run model download can be slow
@@ -108,6 +114,8 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
                     env={
                         "NEMOTRON_MODEL_NAME": cfg.nemotron_model_name,
                         "NEMOTRON_MODEL_ID": cfg.nemotron_model_id,
+                        "NEMOTRON_LANGUAGE": cfg.nemotron_language,
+                        "NEMOTRON_DEVICE": os.getenv("NEMOTRON_DEVICE", cfg.device),
                         "PYTORCH_ENABLE_MPS_FALLBACK": "1",
                     },
                     ready_url=f"http://127.0.0.1:{cfg.stt_bind_port}/health",
@@ -115,20 +123,43 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
                 )
             )
 
-    # --- TTS (Kokoro) ------------------------------------------------
+    # --- TTS (BlueMagpie or Kokoro) ----------------------------------
     if cfg.manage_tts:
-        specs.append(
-            ChildSpec(
-                name="kokoro",
-                argv=[
-                    py, "-m", "local_voice_ai.services.kokoro.server",
-                    "--host", "127.0.0.1",
-                    "--port", str(cfg.tts_bind_port),
-                ],
-                ready_url=f"http://127.0.0.1:{cfg.tts_bind_port}/v1/models",
-                ready_timeout=600.0,
+        if cfg.tts_provider == "kokoro":
+            specs.append(
+                ChildSpec(
+                    name="kokoro",
+                    argv=[
+                        py, "-m", "local_voice_ai.services.kokoro.server",
+                        "--host", "127.0.0.1",
+                        "--port", str(cfg.tts_bind_port),
+                    ],
+                    ready_url=f"http://127.0.0.1:{cfg.tts_bind_port}/v1/models",
+                    ready_timeout=600.0,
+                )
             )
-        )
+        else:
+            specs.append(
+                ChildSpec(
+                    name="bluemagpie",
+                    argv=[
+                        py, "-m", "local_voice_ai.services.bluemagpie.server",
+                        "--host", "127.0.0.1",
+                        "--port", str(cfg.tts_bind_port),
+                    ],
+                    env={
+                        "BLUEMAGPIE_MODEL_NAME": cfg.bluemagpie_model_name,
+                        "BLUEMAGPIE_MODEL_ID": cfg.bluemagpie_model_id,
+                        "BLUEMAGPIE_DEFAULT_VOICE": cfg.tts_voice,
+                        "DEVICE": os.getenv(
+                            "BLUEMAGPIE_DEVICE",
+                            os.getenv("TTS_DEVICE", cfg.device),
+                        ),
+                    },
+                    ready_url=f"http://127.0.0.1:{cfg.tts_bind_port}/v1/models",
+                    ready_timeout=900.0,
+                )
+            )
 
     # --- Agent worker ------------------------------------------------
     specs.append(
@@ -204,6 +235,12 @@ def _download_models(cfg: Config) -> int:
         logger.info("downloading nemotron model %s", cfg.nemotron_model_name)
         import nemo.collections.asr as nemo_asr  # type: ignore[import]
         nemo_asr.models.ASRModel.from_pretrained(cfg.nemotron_model_name)
+
+    if cfg.manage_tts and cfg.tts_provider == "bluemagpie":
+        logger.info("downloading BlueMagpie model %s", cfg.bluemagpie_model_name)
+        from huggingface_hub import snapshot_download  # type: ignore[import]
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        snapshot_download(cfg.bluemagpie_model_name, token=token)
 
     return 0
 

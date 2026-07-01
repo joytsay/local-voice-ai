@@ -33,6 +33,7 @@ FROM ${PYTHON_BASE} AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTORCH_ENABLE_MPS_FALLBACK=1 \
     HF_HOME=/models \
     XDG_CACHE_HOME=/models
@@ -43,15 +44,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         ffmpeg \
+        git \
         libsndfile1 \
         libgomp1 \
+        python3-pip \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Install Python deps via uv for speed and a reproducible env
-RUN pip install --no-cache-dir uv
+RUN python3 -m pip install --no-cache-dir uv
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
@@ -95,4 +98,4 @@ EXPOSE 8080 7880 7881
 VOLUME ["/models"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "local_voice_ai", "serve"]
+CMD ["python3", "-m", "local_voice_ai", "serve"]
