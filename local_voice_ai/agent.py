@@ -21,6 +21,7 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     cli,
+    room_io,
 )
 from livekit.plugins import openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -29,6 +30,13 @@ logger = logging.getLogger("agent")
 
 if livekit_agent_url := os.getenv("LIVEKIT_AGENT_URL"):
     os.environ["LIVEKIT_URL"] = livekit_agent_url
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 PHONE_BOOK_PATH = Path(__file__).resolve().parents[1] / "phonebook.csv"
@@ -46,7 +54,7 @@ PHONE_BOOK = _load_phone_book()
 
 SYSTEM_INSTRUCTIONS_PREFIX = """第一句一定要先說：
 您好，感謝您來電奇偶科技，我是人工智能櫃台，請問需要幫你轉接嗎？
-之後的回覆要簡短、直接、清楚，一定要用繁體中文或英文回答,不要出現簡體中文,以下範例不需要念出來。
+之後的回覆要簡短、直接、清楚，一定要用繁體中文或英文回答,不要出現簡體中文,以下是範例回覆不要顯示出來,以及{}也不要顯示出來。
 如果是找特定人員，請詢問姓名。 請查詢分機表後回答： 範例：幫您轉接{部門} {中文姓名}, {英文姓名}, 分機{分機號碼} 轉接中請稍後。 
 如果有多個姓名的結果 請重新詢問完整姓名 或者部門 再去查表
 以下是公司內部的分機表 欄位依序是 部門 中文姓名 英文姓名 分機號碼：
@@ -90,6 +98,28 @@ class Assistant(Agent):
             tools=tools,
         )
 
+
+class EchoAssistant(Agent):
+    def __init__(self) -> None:
+        super().__init__(instructions="Echo the caller's transcribed speech directly.")
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        text = (new_message.text_content or "").strip()
+        if text:
+            await self.session.interrupt()
+            logger.info("echoing STT transcript to TTS: %s", text)
+            self.session.say(text, add_to_chat_ctx=False)
+
+
+async def _echo_text_input(session: AgentSession, event) -> None:
+    text = event.text.strip()
+    if not text:
+        return
+    await session.interrupt()
+    logger.info("echoing frontend text input to TTS: %s", text)
+    session.say(text, add_to_chat_ctx=False)
+
+
 server = AgentServer()
 
 
@@ -108,6 +138,7 @@ async def my_agent(ctx: JobContext) -> None:
     llama_base_url = os.getenv("LLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
     llama_api_key = os.getenv("LLAMA_API_KEY", "no-key-needed")
     llama_timeout = float(os.getenv("LLAMA_REQUEST_TIMEOUT", "120"))
+    echo_mode = _env_bool("ECHO_MODE")
 
     stt_provider = os.getenv("STT_PROVIDER", "nemotron").lower()
     if stt_provider == "whisper":
@@ -127,22 +158,16 @@ async def my_agent(ctx: JobContext) -> None:
     tts_api_key = os.getenv("TTS_API_KEY", "no-key-needed")
 
     logger.info(
-        "agent session: stt=%s/%s llm=%s/%s tts=%s",
-        stt_provider, stt_model, llama_base_url, llama_model, tts_base_url,
+        "agent session: stt=%s/%s llm=%s/%s tts=%s echo=%s",
+        stt_provider, stt_model, llama_base_url, llama_model, tts_base_url, echo_mode,
     )
 
     stt_kwargs = {"base_url": stt_base_url, "model": stt_model, "api_key": stt_api_key}
     if "language" in inspect.signature(openai.STT).parameters:
         stt_kwargs["language"] = stt_language
 
-    session = AgentSession(
-        stt=openai.STT(**stt_kwargs),
-        llm=openai.LLM(
-            base_url=llama_base_url,
-            model=llama_model,
-            api_key=llama_api_key,
-            timeout=httpx.Timeout(llama_timeout),
-        ),
+    session_kwargs = {
+        "stt": openai.STT(**stt_kwargs),
         # The model name selects the wire protocol the openai TTS plugin uses:
         # only {"tts-1", "tts-1-hd"} use the raw-audio-bytes stream that the
         # Kokoro server speaks. Any other name (e.g. "kokoro") routes the plugin
@@ -150,22 +175,40 @@ async def my_agent(ctx: JobContext) -> None:
         # body as text, pushes zero frames, and raises "no audio frames were
         # pushed". Kokoro ignores the model field, so "tts-1" is purely a
         # protocol selector here.
-        tts=openai.TTS(base_url=tts_base_url, model="tts-1", voice=tts_voice, api_key=tts_api_key),
-        turn_detection=MultilingualModel(),
-        vad=ctx.proc.userdata["vad"],
-        preemptive_generation=True,
-    )
+        "tts": openai.TTS(base_url=tts_base_url, model="tts-1", voice=tts_voice, api_key=tts_api_key),
+        "turn_detection": MultilingualModel(),
+        "vad": ctx.proc.userdata["vad"],
+        "preemptive_generation": True,
+    }
+    if not echo_mode:
+        session_kwargs["llm"] = openai.LLM(
+            base_url=llama_base_url,
+            model=llama_model,
+            api_key=llama_api_key,
+            timeout=httpx.Timeout(llama_timeout),
+        )
 
+    session = AgentSession(**session_kwargs)
+
+    start_kwargs = {"agent": EchoAssistant() if echo_mode else Assistant(), "room": ctx.room}
+    if echo_mode:
+        start_kwargs["room_options"] = room_io.RoomOptions(
+            text_input=room_io.TextInputOptions(text_input_cb=_echo_text_input)
+        )
+
+    await session.start(**start_kwargs)
     await ctx.connect()
-    await session.start(agent=Assistant(), room=ctx.room)
 
-    # Send the greeting immediately after the session starts so the caller
-    # hears the opening line without waiting for VAD/turn detection.
-    greeting = "您好，感謝您來電奇偶科技，我是人工智能櫃台，請問需要幫你轉接嗎？"
-    if hasattr(session, "say"):
-        await session.say(greeting)
-    elif hasattr(session, "speak"):
-        await session.speak(greeting)
+    if not echo_mode:
+        # Send the greeting immediately after the session starts so the caller
+        # hears the opening line without waiting for VAD/turn detection.
+        greeting = "您好，感謝您來電奇偶科技，我是人工智能櫃台，請問需要幫你轉接嗎？"
+        if hasattr(session, "say"):
+            session.say(greeting, add_to_chat_ctx=False)
+        elif hasattr(session, "speak"):
+            result = session.speak(greeting)
+            if inspect.isawaitable(result):
+                await result
 
 
 if __name__ == "__main__":

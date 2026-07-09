@@ -100,6 +100,7 @@ class Config:
     device: str = "cpu"  # cpu | cuda | mps
 
     # --- Misc -----------------------------------------------------------
+    echo_mode: bool = False
     log_level: str = "INFO"
 
     @classmethod
@@ -109,6 +110,7 @@ class Config:
         llama_base_url = os.getenv("LLAMA_BASE_URL", cls.llama_base_url)
         stt_base_url = os.getenv("STT_BASE_URL")
         tts_base_url = os.getenv("TTS_BASE_URL", cls.tts_base_url)
+        echo_mode = _env_bool("ECHO_MODE", cls.echo_mode)
 
         stt_provider = os.getenv("STT_PROVIDER", cls.stt_provider).lower()
         if stt_base_url is None:
@@ -148,7 +150,7 @@ class Config:
             llama_ctx_size=int(os.getenv("LLAMA_CTX_SIZE", str(cls.llama_ctx_size))),
             llama_n_gpu_layers=int(os.getenv("LLAMA_N_GPU_LAYERS", str(cls.llama_n_gpu_layers))),
             llama_bind_port=int(os.getenv("LLAMA_BIND_PORT", str(cls.llama_bind_port))),
-            manage_llama=_env_bool("MANAGE_LLAMA", _is_loopback(llama_base_url)),
+            manage_llama=_env_bool("MANAGE_LLAMA", _is_loopback(llama_base_url) and not echo_mode),
             #
             stt_provider=stt_provider,
             stt_base_url=stt_base_url,
@@ -173,6 +175,7 @@ class Config:
             bluemagpie_model_id=os.getenv("BLUEMAGPIE_MODEL_ID", cls.bluemagpie_model_id),
             #
             device=os.getenv("DEVICE", cls.device).lower(),
+            echo_mode=echo_mode,
             log_level=os.getenv("LOG_LEVEL", cls.log_level).upper(),
         )
 
@@ -182,6 +185,7 @@ class Config:
             "LIVEKIT_URL": os.getenv("LIVEKIT_AGENT_URL", self.livekit_url),
             "LIVEKIT_API_KEY": self.livekit_api_key,
             "LIVEKIT_API_SECRET": self.livekit_api_secret,
+            "ECHO_MODE": "1" if self.echo_mode else "0",
             "LLAMA_BASE_URL": self.llama_base_url,
             "LLAMA_MODEL": self.llama_model,
             "LLAMA_API_KEY": self.llama_api_key,

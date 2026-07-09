@@ -225,13 +225,27 @@ async def speech(req: SpeechRequest) -> Response:
         raise HTTPException(status_code=400, detail="input is required")
 
     voice = req.voice or DEFAULT_VOICE
+    requested_format = req.response_format or "mp3"
+    logger.info(
+        "tts request chars=%d voice=%s format=%s",
+        len(req.input),
+        voice,
+        requested_format,
+    )
     try:
         audio, sample_rate = _synthesize(req.input, voice, float(req.speed or 1.0))
     except Exception as exc:
         logger.exception("synthesis failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    data, media_type = _encode(audio, sample_rate, req.response_format or "mp3")
+    data, media_type = _encode(audio, sample_rate, requested_format)
+    logger.info(
+        "tts response samples=%d sample_rate=%d bytes=%d media_type=%s",
+        audio.size,
+        sample_rate,
+        len(data),
+        media_type,
+    )
     return Response(content=data, media_type=media_type)
 
 

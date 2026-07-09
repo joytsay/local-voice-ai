@@ -30,8 +30,10 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
       LIVEKIT_NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
+      ECHO_MODE: ${ECHO_MODE:-0}
       STT_PROVIDER: ${STT_PROVIDER:-whisper}
       STT_LANGUAGE: ${STT_LANGUAGE:-auto}
+      VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cpu}
       NEMOTRON_LANGUAGE: ${NEMOTRON_LANGUAGE:-zh-CN}
       TTS_PROVIDER: ${TTS_PROVIDER:-bluemagpie}
       TTS_VOICE: ${TTS_VOICE:-chinese_female}

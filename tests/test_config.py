@@ -67,6 +67,13 @@ class TestManageDefaults:
         cfg = Config.from_env()
         assert cfg.manage_tts is False
 
+    def test_echo_mode_disables_llama_management(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ECHO_MODE", "1")
+        cfg = Config.from_env()
+        assert cfg.echo_mode is True
+        assert cfg.manage_llama is False
+        assert cfg.manage_stt and cfg.manage_tts
+
 
 class TestManageOverride:
     def test_force_disable_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,6 +85,14 @@ class TestManageOverride:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("LLAMA_BASE_URL", "https://api.openai.com/v1")
+        monkeypatch.setenv("MANAGE_LLAMA", "1")
+        cfg = Config.from_env()
+        assert cfg.manage_llama is True
+
+    def test_force_enable_llama_overrides_echo_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ECHO_MODE", "1")
         monkeypatch.setenv("MANAGE_LLAMA", "1")
         cfg = Config.from_env()
         assert cfg.manage_llama is True
@@ -120,6 +135,7 @@ class TestAgentEnv:
         env = cfg.agent_env()
         for required in (
             "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+            "ECHO_MODE",
             "LLAMA_BASE_URL", "LLAMA_MODEL", "LLAMA_API_KEY",
             "STT_BASE_URL", "STT_MODEL", "STT_API_KEY", "STT_PROVIDER",
             "NEMOTRON_LANGUAGE", "TTS_PROVIDER",
