@@ -25,12 +25,13 @@ MODEL_NAME = os.getenv("BLUEMAGPIE_MODEL_NAME", "OpenFormosa/BlueMagpie-TTS")
 MODEL_ID = os.getenv("BLUEMAGPIE_MODEL_ID", "bluemagpie-tts")
 DEFAULT_VOICE = os.getenv("BLUEMAGPIE_DEFAULT_VOICE", "chinese_female")
 DEFAULT_CFG_VALUE = float(os.getenv("BLUEMAGPIE_CFG_VALUE", "2.8"))
-DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10"))
+DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9"))
 DEFAULT_SEED = int(os.getenv("BLUEMAGPIE_SEED", "1729"))
-FORCED_VOICE = os.getenv("BLUEMAGPIE_FORCE_VOICE", DEFAULT_VOICE).strip()
+FORCED_VOICE = os.getenv("BLUEMAGPIE_FORCE_VOICE", "").strip()
 
 _model = None
 _speaker_table: Optional[dict[str, object]] = None
+_hung_yi_lee_centroid: Optional[torch.Tensor] = None
 _model_dir: Optional[str] = None
 
 
@@ -43,6 +44,27 @@ def _complete_model_dir(path: str) -> bool:
         os.path.join("checkpoints", "speaker_centroids.pt"),
     )
     return all(os.path.exists(os.path.join(path, item)) for item in required)
+
+
+def _compatible_local_model_dir(path: str) -> Optional[str]:
+    """Resolve an incomplete HF snapshot path to a complete cached sibling."""
+    if _complete_model_dir(path):
+        return path
+
+    snapshots_dir = os.path.dirname(os.path.abspath(path))
+    if os.path.basename(snapshots_dir) != "snapshots":
+        return None
+
+    candidates = sorted(
+        os.listdir(snapshots_dir),
+        key=lambda item: os.path.getmtime(os.path.join(snapshots_dir, item)),
+        reverse=True,
+    )
+    for commit in candidates:
+        snapshot = os.path.join(snapshots_dir, commit)
+        if snapshot != os.path.abspath(path) and _complete_model_dir(snapshot):
+            return snapshot
+    return None
 
 
 def _cached_snapshot(repo_id: str) -> Optional[str]:
@@ -83,8 +105,18 @@ def _cached_snapshot(repo_id: str) -> Optional[str]:
 
 def _device() -> str:
     requested = os.getenv("DEVICE", "").strip().lower()
-    if requested in {"cuda", "cpu", "mps"}:
+    if requested == "cpu":
         return requested
+    if requested == "cuda":
+        if torch.cuda.is_available():
+            return "cuda"
+        logger.warning("Requested DEVICE=cuda but CUDA is unavailable; falling back to CPU")
+        return "cpu"
+    if requested == "mps":
+        if torch.backends.mps.is_available():
+            return "mps"
+        logger.warning("Requested DEVICE=mps but MPS is unavailable; falling back to CPU")
+        return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
@@ -93,7 +125,7 @@ def _device() -> str:
 
 
 def _load_model() -> None:
-    global _model, _speaker_table, _model_dir
+    global _model, _speaker_table, _hung_yi_lee_centroid, _model_dir
 
     device = _device()
     logger.info("downloading/loading BlueMagpie model %s on %s", MODEL_NAME, device)
@@ -102,7 +134,19 @@ def _load_model() -> None:
 
     token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
     if os.path.isdir(MODEL_NAME):
-        _model_dir = MODEL_NAME
+        _model_dir = _compatible_local_model_dir(MODEL_NAME)
+        if _model_dir is None:
+            raise FileNotFoundError(
+                f"BlueMagpie model directory {MODEL_NAME!r} is incomplete: "
+                "expected config.json, tokenizer.json, audiovae.pth, "
+                "pytorch_model.bin, and checkpoints/speaker_centroids.pt"
+            )
+        if os.path.abspath(_model_dir) != os.path.abspath(MODEL_NAME):
+            logger.warning(
+                "BlueMagpie snapshot %s is incomplete; using complete cached snapshot %s",
+                MODEL_NAME,
+                _model_dir,
+            )
     else:
         _model_dir = _cached_snapshot(MODEL_NAME)
         if _model_dir is None:
@@ -124,6 +168,22 @@ def _load_model() -> None:
     if os.path.exists(table_path):
         _speaker_table = torch.load(table_path, map_location="cpu", weights_only=True)
 
+    hung_yi_lee_path = os.path.join(
+        _model_dir,
+        "checkpoints",
+        "hung_yi_lee_speaker_centroids.pt",
+    )
+    if os.path.exists(hung_yi_lee_path):
+        hung_yi_lee_table = torch.load(
+            hung_yi_lee_path,
+            map_location="cpu",
+            weights_only=True,
+        )
+        speaker_ids = hung_yi_lee_table.get("speaker_ids")
+        centroids = hung_yi_lee_table.get("centroids")
+        if isinstance(speaker_ids, list) and centroids is not None and "hung_yi_lee" in speaker_ids:
+            _hung_yi_lee_centroid = centroids[speaker_ids.index("hung_yi_lee")]
+
     logger.info("BlueMagpie model ready on %s", getattr(_model, "device", _device()))
 
 
@@ -141,7 +201,12 @@ class SpeechRequest(BaseModel):
     input: str
     voice: Optional[str] = None
     response_format: Optional[str] = "mp3"
-    speed: Optional[float] = 1.0
+    cfg_value: float = DEFAULT_CFG_VALUE
+    inference_timesteps: int = DEFAULT_INFERENCE_TIMESTEPS
+    min_len: int = 2
+    max_len: int = 2000
+    retry_badcase: bool = False
+    seed: int = DEFAULT_SEED
 
 
 def _speaker_id(voice: str) -> str:
@@ -157,47 +222,58 @@ def _speaker_id(voice: str) -> str:
 
 
 def _speaker_centroid(voice: str):
+    speaker_id = _speaker_id(voice)
+    if speaker_id == "hung_yi_lee" and _hung_yi_lee_centroid is not None:
+        return _hung_yi_lee_centroid
     if not _speaker_table:
         return None
     speaker_ids = _speaker_table.get("speaker_ids")
     centroids = _speaker_table.get("centroids")
-    speaker_id = _speaker_id(voice)
     if not isinstance(speaker_ids, list) or centroids is None or speaker_id not in speaker_ids:
         return None
     return centroids[speaker_ids.index(speaker_id)]
 
 
-def _synthesize(text: str, voice: str, speed: float) -> tuple[np.ndarray, int]:
+def _synthesize(
+    text: str,
+    voice: str,
+    cfg_value: float,
+    inference_timesteps: int,
+    min_len: int,
+    max_len: int,
+    retry_badcase: bool,
+    seed: int,
+) -> tuple[np.ndarray, int]:
     if _model is None:
         raise RuntimeError("model not loaded")
 
     kwargs = {
         "target_text": text,
-        "cfg_value": DEFAULT_CFG_VALUE,
-        "inference_timesteps": DEFAULT_INFERENCE_TIMESTEPS,
+        "cfg_value": cfg_value,
+        "inference_timesteps": inference_timesteps,
+        "min_len": min_len,
+        "max_len": max_len,
+        "retry_badcase": retry_badcase,
     }
+
     forced_voice = FORCED_VOICE or voice
+    speaker_id = _speaker_id(forced_voice)
     centroid = _speaker_centroid(forced_voice)
     if centroid is not None:
         kwargs["speaker_centroid"] = centroid
+        logger.info("using speaker centroid id=%s", speaker_id)
     else:
-        logger.warning("speaker centroid for %s not found; using model default speaker", forced_voice)
+        logger.warning("speaker centroid for %s not found; using model default speaker", speaker_id)
 
     with torch.no_grad():
-        torch.manual_seed(DEFAULT_SEED)
+        torch.manual_seed(seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(DEFAULT_SEED)
+            torch.cuda.manual_seed_all(seed)
         audio = _model.generate(**kwargs)
 
     if hasattr(audio, "detach"):
         audio = audio.detach().cpu().numpy()
     audio_np = np.asarray(audio, dtype=np.float32).squeeze()
-
-    # OpenAI's TTS API has a speed parameter. BlueMagpie does not expose direct
-    # time-stretching, so keep default behavior unless the caller explicitly
-    # sets a different value.
-    if speed and speed != 1.0:
-        logger.warning("BlueMagpie speed=%s requested but direct speed control is unsupported", speed)
 
     return audio_np, int(getattr(_model, "sample_rate", 48000))
 
@@ -227,13 +303,29 @@ async def speech(req: SpeechRequest) -> Response:
     voice = req.voice or DEFAULT_VOICE
     requested_format = req.response_format or "mp3"
     logger.info(
-        "tts request chars=%d voice=%s format=%s",
+        "tts request chars=%d voice=%s format=%s cfg=%.2f steps=%d min_len=%d "
+        "max_len=%d retry=%s seed=%d",
         len(req.input),
         voice,
         requested_format,
+        req.cfg_value,
+        req.inference_timesteps,
+        req.min_len,
+        req.max_len,
+        req.retry_badcase,
+        req.seed,
     )
     try:
-        audio, sample_rate = _synthesize(req.input, voice, float(req.speed or 1.0))
+        audio, sample_rate = _synthesize(
+            req.input,
+            voice,
+            req.cfg_value,
+            req.inference_timesteps,
+            req.min_len,
+            req.max_len,
+            req.retry_badcase,
+            req.seed,
+        )
     except Exception as exc:
         logger.exception("synthesis failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

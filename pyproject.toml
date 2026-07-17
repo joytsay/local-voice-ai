@@ -34,13 +34,16 @@ ml = [
     "torch",
     "torchaudio",
     "nemo-toolkit[asr]",
-    "bluemagpie @ git+https://github.com/OpenFormosa/BlueMagpie-TTS.git",
+    "bluemagpie-tts @ git+https://github.com/OpenFormosa/BlueMagpie-TTS.git",
     "kokoro>=0.9",
-    "huggingface_hub",
+    "huggingface_hub>=0.34,<1.0",
 ]
 # Whisper fallback (vox-box) — only when STT_PROVIDER=whisper.
 whisper = [
     "vox-box",
+]
+gradio = [
+    "gradio",
 ]
 dev = [
     "pytest",

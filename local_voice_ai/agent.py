@@ -176,11 +176,11 @@ async def my_agent(ctx: JobContext) -> None:
         # pushed". Kokoro ignores the model field, so "tts-1" is purely a
         # protocol selector here.
         "tts": openai.TTS(base_url=tts_base_url, model="tts-1", voice=tts_voice, api_key=tts_api_key),
-        "turn_detection": MultilingualModel(),
         "vad": ctx.proc.userdata["vad"],
-        "preemptive_generation": True,
     }
     if not echo_mode:
+        session_kwargs["turn_detection"] = MultilingualModel()
+        session_kwargs["preemptive_generation"] = True
         session_kwargs["llm"] = openai.LLM(
             base_url=llama_base_url,
             model=llama_model,
@@ -196,8 +196,15 @@ async def my_agent(ctx: JobContext) -> None:
             text_input=room_io.TextInputOptions(text_input_cb=_echo_text_input)
         )
 
-    await session.start(**start_kwargs)
-    await ctx.connect()
+    try:
+        logger.info("connecting agent job to room")
+        await ctx.connect()
+        logger.info("starting agent session")
+        await session.start(**start_kwargs)
+        logger.info("agent session started")
+    except Exception:
+        logger.exception("agent session initialization failed")
+        raise
 
     if not echo_mode:
         # Send the greeting immediately after the session starts so the caller

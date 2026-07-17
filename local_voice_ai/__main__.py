@@ -29,6 +29,7 @@ logger = logging.getLogger("main")
 def _build_specs(cfg: Config) -> list[ChildSpec]:
     specs: list[ChildSpec] = []
     py = sys.executable
+    service_bind_host = cfg.service_bind_host
 
     # --- LiveKit server (Go binary) ----------------------------------
     if cfg.manage_livekit:
@@ -36,6 +37,7 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
         specs.append(
             ChildSpec(
                 name="livekit",
+                role="livekit",
                 argv=[
                     livekit_bin,
                     "--dev",
@@ -62,7 +64,7 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
         llama_bin = os.getenv("LLAMA_BIN", "llama-server")
         llama_argv = [
             llama_bin,
-            "--host", "127.0.0.1",
+            "--host", service_bind_host,
             "--port", str(cfg.llama_bind_port),
             "--ctx-size", str(cfg.llama_ctx_size),
             "--n-gpu-layers", str(cfg.llama_n_gpu_layers),
@@ -77,6 +79,7 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
         specs.append(
             ChildSpec(
                 name="llama",
+                role="llama",
                 argv=llama_argv,
                 env={"HF_HOME": os.getenv("HF_HOME", "/models"), "XDG_CACHE_HOME": os.getenv("XDG_CACHE_HOME", "/models")},
                 ready_url=f"http://127.0.0.1:{cfg.llama_bind_port}/v1/models",
@@ -87,17 +90,34 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
     # --- STT (Nemotron or Whisper) -----------------------------------
     if cfg.manage_stt:
         if cfg.stt_provider == "whisper":
+            whisper_model_args = (
+                ["--model", cfg.voxbox_model_path]
+                if cfg.voxbox_model_path
+                else ["--huggingface-repo-id", cfg.voxbox_hf_repo_id]
+            )
+            whisper_pythonpath = os.pathsep.join(
+                part
+                for part in ("/opt/voxbox", os.getenv("PYTHONPATH"))
+                if part
+            )
             specs.append(
                 ChildSpec(
                     name="whisper",
+                    role="stt",
                     argv=[
-                        "vox-box", "start",
-                        "--huggingface-repo-id", cfg.voxbox_hf_repo_id,
+                        py, "-c",
+                        "from vox_box.main import main; raise SystemExit(main())",
+                        "start",
+                        *whisper_model_args,
                         "--data-dir", os.getenv("VOXBOX_DATA_DIR", "/data"),
                         "--device", cfg.voxbox_device,
-                        "--host", "127.0.0.1",
+                        "--host", service_bind_host,
                         "--port", str(cfg.stt_bind_port),
                     ],
+                    env={
+                        "PYTHONPATH": whisper_pythonpath,
+                        "IS_FASTER_WHISPER": "1",
+                    },
                     ready_url=f"http://127.0.0.1:{cfg.stt_bind_port}/v1/models",
                     ready_timeout=600.0,
                 )
@@ -106,9 +126,10 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
             specs.append(
                 ChildSpec(
                     name="nemotron",
+                    role="stt",
                     argv=[
                         py, "-m", "local_voice_ai.services.nemotron.server",
-                        "--host", "127.0.0.1",
+                        "--host", service_bind_host,
                         "--port", str(cfg.stt_bind_port),
                     ],
                     env={
@@ -129,9 +150,10 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
             specs.append(
                 ChildSpec(
                     name="kokoro",
+                    role="tts",
                     argv=[
                         py, "-m", "local_voice_ai.services.kokoro.server",
-                        "--host", "127.0.0.1",
+                        "--host", service_bind_host,
                         "--port", str(cfg.tts_bind_port),
                     ],
                     ready_url=f"http://127.0.0.1:{cfg.tts_bind_port}/v1/models",
@@ -142,9 +164,10 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
             specs.append(
                 ChildSpec(
                     name="bluemagpie",
+                    role="tts",
                     argv=[
                         py, "-m", "local_voice_ai.services.bluemagpie.server",
-                        "--host", "127.0.0.1",
+                        "--host", service_bind_host,
                         "--port", str(cfg.tts_bind_port),
                     ],
                     env={
@@ -165,6 +188,7 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
     specs.append(
         ChildSpec(
             name="agent",
+            role="agent",
             argv=[py, "-m", "local_voice_ai.agent", "start"],
             env=cfg.agent_env(),
             ready_url=None,
@@ -192,7 +216,34 @@ async def _serve(cfg: Config) -> int:
         await supervisor.shutdown()
         return 1
 
-    app = build_app(cfg)
+    async def reload_models(stt_model: Optional[str], tts_model: Optional[str]) -> dict[str, str]:
+        roles = {"agent"}
+        if stt_model:
+            cfg.stt_model = stt_model
+            if stt_model == cfg.voxbox_hf_repo_id or "whisper" in stt_model.lower():
+                cfg.stt_provider = "whisper"
+                cfg.voxbox_hf_repo_id = stt_model
+            else:
+                cfg.stt_provider = "nemotron"
+                cfg.nemotron_model_id = stt_model
+                cfg.nemotron_model_name = os.getenv("NEMOTRON_MODEL_NAME", cfg.nemotron_model_name)
+            roles.add("stt")
+        if tts_model:
+            if tts_model == "kokoro" or "kokoro" in tts_model.lower():
+                cfg.tts_provider = "kokoro"
+                cfg.tts_voice = os.getenv("KOKORO_VOICE", "af_nova")
+            else:
+                cfg.tts_provider = "bluemagpie"
+                cfg.bluemagpie_model_id = tts_model
+                if "/" in tts_model or tts_model.startswith("/"):
+                    cfg.bluemagpie_model_name = tts_model
+                cfg.tts_voice = os.getenv("TTS_VOICE", cfg.tts_voice)
+            roles.add("tts")
+
+        await supervisor.replace_roles(roles, _build_specs(cfg))
+        return {"sttModel": cfg.stt_model, "ttsModel": cfg.bluemagpie_model_id if cfg.tts_provider == "bluemagpie" else "kokoro"}
+
+    app = build_app(cfg, reload_models=reload_models)
     uv_config = uvicorn.Config(
         app,
         host=cfg.web_host,

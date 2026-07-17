@@ -58,9 +58,11 @@ RUN python3 -m pip install --no-cache-dir uv
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
-# Copy project metadata first for layer caching
+# Copy only project metadata and a minimal package skeleton first. Application
+# source is copied after dependency installation so normal code edits do not
+# invalidate the large ML layers.
 COPY pyproject.toml ./
-COPY local_voice_ai ./local_voice_ai
+RUN mkdir -p local_voice_ai && touch local_voice_ai/__init__.py
 
 # Install: torch (with explicit index for CPU/CUDA selection) + the [ml] extras
 # in a single resolution pass so versions are consistent.
@@ -68,6 +70,28 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --index-strategy unsafe-best-match \
         --extra-index-url ${TORCH_INDEX_URL} \
         ".[ml]"
+
+# Keep Gradio separate so adding or updating the tester does not invalidate the
+# much larger ML dependency layer above.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system gradio
+
+# vox-box 0.0.21 pins PyAV below 13, while LiveKit requires PyAV 14 or newer.
+# Install the Whisper-specific packages into an isolated import directory so
+# both stacks can coexist in one image. The supervisor exposes this directory
+# only to the Whisper child process.
+RUN python3 -m pip install --no-cache-dir --upgrade "setuptools<80" wheel \
+    && python3 -m pip install --no-cache-dir --no-build-isolation --no-deps \
+        --target /opt/voxbox "vox-box==0.0.21" \
+    && python3 -m pip install --no-cache-dir --upgrade \
+        --target /opt/voxbox "av>=11.0,<13" \
+    && python3 -m pip install --no-cache-dir --no-deps \
+        --target /opt/voxbox "faster-whisper==1.0.3" ctranslate2 \
+    && python3 -m pip install --no-cache-dir --upgrade \
+        --target /opt/voxbox "modelscope>=1.20,<2.0" "huggingface-hub>=0.34,<1.0"
+
+# Copy application code only after all Python dependency layers are complete.
+COPY local_voice_ai ./local_voice_ai
 
 # Drop in the binaries from upstream images.
 #

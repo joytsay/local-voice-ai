@@ -33,6 +33,14 @@ def _is_loopback(url: str) -> bool:
     return host in {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or default
+
+
 @dataclass
 class Config:
     # --- Web (FastAPI in the supervisor process) -------------------------
@@ -53,6 +61,7 @@ class Config:
     # running the server on a remote host reached over the network.
     livekit_node_ip: str = "127.0.0.1"
     manage_livekit: bool = True
+    service_bind_host: str = "127.0.0.1"
 
     # --- LLM (llama.cpp by default) -------------------------------------
     llama_base_url: str = "http://127.0.0.1:11434/v1"
@@ -82,6 +91,7 @@ class Config:
 
     # Whisper (vox-box) specific
     voxbox_hf_repo_id: str = "Systran/faster-whisper-small"
+    voxbox_model_path: Optional[str] = None
     voxbox_device: str = "cpu"
 
     # --- TTS (BlueMagpie by default, Kokoro fallback) -------------------
@@ -95,6 +105,9 @@ class Config:
     # BlueMagpie-specific
     bluemagpie_model_name: str = "OpenFormosa/BlueMagpie-TTS"
     bluemagpie_model_id: str = "bluemagpie-tts"
+
+    stt_model_options: list[str] = field(default_factory=list)
+    tts_model_options: list[str] = field(default_factory=list)
 
     # --- Device ---------------------------------------------------------
     device: str = "cpu"  # cpu | cuda | mps
@@ -140,6 +153,7 @@ class Config:
             livekit_udp_port=int(os.getenv("LIVEKIT_UDP_PORT", str(cls.livekit_udp_port))),
             livekit_node_ip=os.getenv("LIVEKIT_NODE_IP", cls.livekit_node_ip),
             manage_livekit=_env_bool("MANAGE_LIVEKIT", _is_loopback(livekit_url)),
+            service_bind_host=os.getenv("SERVICE_BIND_HOST", cls.service_bind_host),
             #
             llama_base_url=llama_base_url,
             llama_model=os.getenv("LLAMA_MODEL", cls.llama_model),
@@ -163,6 +177,7 @@ class Config:
             nemotron_model_id=os.getenv("NEMOTRON_MODEL_ID", cls.nemotron_model_id),
             nemotron_language=os.getenv("NEMOTRON_LANGUAGE", cls.nemotron_language),
             voxbox_hf_repo_id=os.getenv("VOXBOX_HF_REPO_ID", cls.voxbox_hf_repo_id),
+            voxbox_model_path=os.getenv("VOXBOX_MODEL_PATH"),
             voxbox_device=os.getenv("VOXBOX_DEVICE", cls.voxbox_device),
             #
             tts_provider=os.getenv("TTS_PROVIDER", cls.tts_provider).lower(),
@@ -173,6 +188,20 @@ class Config:
             manage_tts=_env_bool("MANAGE_TTS", _is_loopback(tts_base_url)),
             bluemagpie_model_name=os.getenv("BLUEMAGPIE_MODEL_NAME", cls.bluemagpie_model_name),
             bluemagpie_model_id=os.getenv("BLUEMAGPIE_MODEL_ID", cls.bluemagpie_model_id),
+            stt_model_options=_env_list(
+                "STT_MODEL_OPTIONS",
+                [
+                    os.getenv("NEMOTRON_MODEL_ID", cls.nemotron_model_id),
+                    os.getenv("VOXBOX_HF_REPO_ID", cls.voxbox_hf_repo_id),
+                ],
+            ),
+            tts_model_options=_env_list(
+                "TTS_MODEL_OPTIONS",
+                [
+                    os.getenv("BLUEMAGPIE_MODEL_ID", cls.bluemagpie_model_id),
+                    "kokoro",
+                ],
+            ),
             #
             device=os.getenv("DEVICE", cls.device).lower(),
             echo_mode=echo_mode,

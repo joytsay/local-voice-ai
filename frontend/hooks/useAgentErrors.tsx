@@ -1,13 +1,19 @@
 import { useEffect } from 'react';
-import { useAgent, useSessionContext } from '@livekit/components-react';
+import { useAgent, useRemoteParticipants, useSessionContext } from '@livekit/components-react';
 import { toastAlert } from '@/components/livekit/alert-toast';
 
 export function useAgentErrors() {
   const agent = useAgent();
+  const participants = useRemoteParticipants();
   const { isConnected, end } = useSessionContext();
 
   useEffect(() => {
     if (isConnected && agent.state === 'failed') {
+      const isAgentParticipantConnected = participants.some((participant) => participant.isAgent);
+      if (isAgentParticipantConnected) {
+        return;
+      }
+
       const reasons = agent.failureReasons;
 
       toastAlert({
@@ -39,5 +45,5 @@ export function useAgentErrors() {
 
       end();
     }
-  }, [agent, isConnected, end]);
+  }, [agent, participants, isConnected, end]);
 }

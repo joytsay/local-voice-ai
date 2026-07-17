@@ -40,6 +40,32 @@ class TestHealth:
         assert r.json() == {"status": "ok"}
 
 
+class TestModelControls:
+    def test_lists_model_options(self, client: TestClient) -> None:
+        r = client.get("/api/models")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["stt"]["current"] == "nemotron-3.5-asr-streaming"
+        assert "nemotron-3.5-asr-streaming" in data["stt"]["options"]
+        assert data["tts"]["current"] == "bluemagpie-tts"
+        assert "bluemagpie-tts" in data["tts"]["options"]
+
+    def test_reload_without_handler_is_not_available(self, client: TestClient) -> None:
+        r = client.post("/api/models/reload", json={"sttModel": "other"})
+        assert r.status_code == 501
+
+    def test_reload_invokes_handler(self, cfg: Config) -> None:
+        async def reload_models(stt_model: str | None, tts_model: str | None) -> dict[str, str]:
+            assert stt_model == "stt-next"
+            assert tts_model == "tts-next"
+            return {"sttModel": "stt-next", "ttsModel": "tts-next"}
+
+        client = TestClient(build_app(cfg, reload_models=reload_models))
+        r = client.post("/api/models/reload", json={"sttModel": "stt-next", "ttsModel": "tts-next"})
+        assert r.status_code == 200
+        assert r.json() == {"sttModel": "stt-next", "ttsModel": "tts-next"}
+
+
 class TestConnectionDetails:
     def test_mints_token_with_empty_body(self, client: TestClient) -> None:
         r = client.post("/api/connection-details", json={})

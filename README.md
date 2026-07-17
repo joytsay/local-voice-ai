@@ -37,14 +37,15 @@ LLAMA_MODEL_ALIAS=qwen3-4b \
 STT_PROVIDER=whisper \
 STT_LANGUAGE=zh \
 VOXBOX_DEVICE=cuda \
+VOXBOX_MODEL_PATH=/models/voxbox/cache/huggingface/models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120 \
 BLUEMAGPIE_DEVICE=cuda \
-BLUEMAGPIE_MODEL_NAME=/models/hf/OpenFormosa/BlueMagpie-TTS \
+BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/78b3cbe95ed6f3097a07b5894444998c3f879075 \
 LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b7205 \
 PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
 GPU_LLAMA_N_GPU_LAYERS=3 \
 COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
-docker compose up --no-build
+docker compose up --build
 ```
 
 ### Apple Silicon
@@ -118,8 +119,8 @@ See `.env` for the full list. The most important ones:
 
 - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — local-default; override for cloud.
 - `LLAMA_BASE_URL`, `LLAMA_MODEL`, `LLAMA_HF_REPO`, `LLAMA_N_GPU_LAYERS`
-- `STT_PROVIDER` (`nemotron`|`whisper`), `STT_BASE_URL`, `STT_MODEL`, `NEMOTRON_LANGUAGE`
-- `TTS_PROVIDER` (`bluemagpie`|`kokoro`), `TTS_BASE_URL`, `TTS_VOICE`
+- `STT_PROVIDER` (`nemotron`|`whisper`), `STT_BASE_URL`, `STT_MODEL`, `VOXBOX_MODEL_PATH`, `NEMOTRON_LANGUAGE`
+- `TTS_PROVIDER` (`bluemagpie`|`kokoro`), `TTS_BASE_URL`, `TTS_VOICE`, `BLUEMAGPIE_MODEL_NAME`
 - `WEB_PORT` (default `8080`)
 - `MANAGE_LIVEKIT`, `MANAGE_LLAMA`, `MANAGE_STT`, `MANAGE_TTS` — explicit overrides for the auto-detected "is the URL external?" logic.
 

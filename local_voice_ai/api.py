@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import random
 from datetime import timedelta
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -58,7 +58,10 @@ def _mint_token(cfg: Config, agent_name: Optional[str]) -> dict[str, Any]:
     }
 
 
-def build_app(cfg: Config) -> FastAPI:
+ReloadModels = Callable[[Optional[str], Optional[str]], Awaitable[dict[str, str]]]
+
+
+def build_app(cfg: Config, reload_models: Optional[ReloadModels] = None) -> FastAPI:
     app = FastAPI(title="local-voice-ai", version="0.1.0")
 
     @app.post("/api/connection-details")
@@ -85,6 +88,51 @@ def build_app(cfg: Config) -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/models")
+    async def models() -> JSONResponse:
+        tts_model = cfg.bluemagpie_model_id if cfg.tts_provider == "bluemagpie" else "kokoro"
+        return JSONResponse(
+            {
+                "stt": {
+                    "current": cfg.stt_model,
+                    "options": cfg.stt_model_options,
+                    "managed": cfg.manage_stt,
+                },
+                "tts": {
+                    "current": tts_model,
+                    "options": cfg.tts_model_options,
+                    "managed": cfg.manage_tts,
+                },
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/models/reload")
+    async def reload_selected_models(request: Request) -> JSONResponse:
+        if reload_models is None:
+            raise HTTPException(status_code=501, detail="model reload is not available")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        stt_model = body.get("sttModel")
+        tts_model = body.get("ttsModel")
+        if stt_model is not None and not isinstance(stt_model, str):
+            raise HTTPException(status_code=400, detail="sttModel must be a string")
+        if tts_model is not None and not isinstance(tts_model, str):
+            raise HTTPException(status_code=400, detail="ttsModel must be a string")
+        if not stt_model and not tts_model:
+            raise HTTPException(status_code=400, detail="select at least one model")
+
+        try:
+            data = await reload_models(stt_model, tts_model)
+        except Exception as exc:
+            logger.exception("model reload failed")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
     if cfg.frontend_dir:
         # SPA-style: serve static export, falling back to index.html for unknown paths.

@@ -27,6 +27,7 @@ logger = logging.getLogger("supervisor")
 class ChildSpec:
     name: str
     argv: list[str]
+    role: Optional[str] = None
     env: dict[str, str] = field(default_factory=dict)
     cwd: Optional[str] = None
     ready_url: Optional[str] = None
@@ -50,6 +51,7 @@ class Supervisor:
         self._children: list[_Child] = [_Child(spec=spec) for spec in specs]
         self._stop_event = asyncio.Event()
         self._http: Optional[httpx.AsyncClient] = None
+        self._lock = asyncio.Lock()
 
     @property
     def stopping(self) -> bool:
@@ -63,8 +65,31 @@ class Supervisor:
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(2.0))
 
         # Spawn all children in parallel; each one's readiness wait is independent.
-        await asyncio.gather(*(self._start(child) for child in self._children))
-        await asyncio.gather(*(self._await_ready(child) for child in self._children))
+        async with self._lock:
+            await asyncio.gather(*(self._start(child) for child in self._children))
+            await asyncio.gather(*(self._await_ready(child) for child in self._children))
+
+    async def replace_roles(self, roles: set[str], specs: list[ChildSpec]) -> None:
+        """Replace running children for the given roles and wait until ready."""
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=httpx.Timeout(2.0))
+
+        async with self._lock:
+            old_children = [child for child in self._children if (child.spec.role or child.spec.name) in roles]
+            self._children = [
+                child for child in self._children if (child.spec.role or child.spec.name) not in roles
+            ]
+
+            await asyncio.gather(*(self._stop_child(child) for child in old_children))
+
+            new_children = [
+                _Child(spec=spec)
+                for spec in specs
+                if (spec.role or spec.name) in roles
+            ]
+            self._children.extend(new_children)
+            await asyncio.gather(*(self._start(child) for child in new_children))
+            await asyncio.gather(*(self._await_ready(child) for child in new_children))
 
     async def run_until_signal(self) -> int:
         """Wait until a signal arrives or any child exceeds restart budget."""
@@ -140,6 +165,30 @@ class Supervisor:
             self._watch_exit(child),
             name=f"watch:{child.spec.name}",
         )
+
+    async def _stop_child(self, child: _Child, timeout: float = 10.0) -> None:
+        child.ready = False
+        if child.watch_task and not child.watch_task.done():
+            child.watch_task.cancel()
+        if child.process and child.process.returncode is None:
+            logger.info("[%s] terminating for reload", child.spec.name)
+            try:
+                child.process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(child.process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("[%s] killing for reload", child.spec.name)
+                try:
+                    child.process.kill()
+                except ProcessLookupError:
+                    pass
+                await child.process.wait()
+
+        for task in (child.pump_task, child.watch_task):
+            if task and not task.done():
+                task.cancel()
 
     async def _pump_output(self, child: _Child) -> None:
         assert child.process is not None

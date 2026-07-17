@@ -1,3 +1,4 @@
+import { ModelReloadControls } from '@/components/app/model-reload-controls';
 import { Button } from '@/components/livekit/button';
 
 function WelcomeImage() {
@@ -40,6 +41,8 @@ export const WelcomeView = ({
         <Button variant="primary" size="lg" onClick={onStartCall} className="mt-6 w-64 font-mono">
           {startButtonText}
         </Button>
+
+        <ModelReloadControls className="mt-4 w-[min(92vw,520px)]" />
       </section>
 
       <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">
