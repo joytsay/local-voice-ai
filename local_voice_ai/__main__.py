@@ -184,6 +184,32 @@ def _build_specs(cfg: Config) -> list[ChildSpec]:
                 )
             )
 
+    # --- Gradio STT/TTS tester --------------------------------------
+    if cfg.manage_gradio:
+        specs.append(
+            ChildSpec(
+                name="gradio",
+                role="gradio",
+                argv=[
+                    py,
+                    "-m",
+                    "local_voice_ai.run_stt_tts",
+                    "--host",
+                    cfg.gradio_host,
+                    "--port",
+                    str(cfg.gradio_port),
+                ],
+                env={
+                    "STT_BASE_URL": cfg.stt_base_url,
+                    "STT_LANGUAGE": cfg.stt_language,
+                    "TTS_BASE_URL": cfg.tts_base_url,
+                    "TTS_VOICE": cfg.tts_voice,
+                },
+                ready_url=f"http://127.0.0.1:{cfg.gradio_port}/",
+                ready_timeout=60.0,
+            )
+        )
+
     # --- Agent worker ------------------------------------------------
     specs.append(
         ChildSpec(
@@ -204,9 +230,14 @@ async def _serve(cfg: Config) -> int:
     supervisor = Supervisor(specs)
 
     logger.info(
-        "supervisor managing %d children (livekit=%s llama=%s stt=%s tts=%s)",
+        "supervisor managing %d children "
+        "(livekit=%s llama=%s stt=%s tts=%s gradio=%s)",
         len(specs),
-        cfg.manage_livekit, cfg.manage_llama, cfg.manage_stt, cfg.manage_tts,
+        cfg.manage_livekit,
+        cfg.manage_llama,
+        cfg.manage_stt,
+        cfg.manage_tts,
+        cfg.manage_gradio,
     )
 
     try:

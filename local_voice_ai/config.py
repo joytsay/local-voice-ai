@@ -48,6 +48,11 @@ class Config:
     web_port: int = 8080
     frontend_dir: Optional[str] = None  # path to a Next.js static export dir
 
+    # --- Gradio STT/TTS tester ------------------------------------------
+    gradio_host: str = "0.0.0.0"
+    gradio_port: int = 7860
+    manage_gradio: bool = True
+
     # --- LiveKit ---------------------------------------------------------
     livekit_url: str = "ws://127.0.0.1:7880"
     livekit_api_key: str = "devkey"
@@ -144,6 +149,9 @@ class Config:
             web_host=os.getenv("WEB_HOST", cls.web_host),
             web_port=int(os.getenv("WEB_PORT", str(cls.web_port))),
             frontend_dir=os.getenv("FRONTEND_DIR"),
+            gradio_host=os.getenv("GRADIO_HOST", cls.gradio_host),
+            gradio_port=int(os.getenv("GRADIO_PORT", str(cls.gradio_port))),
+            manage_gradio=_env_bool("MANAGE_GRADIO", cls.manage_gradio),
             #
             livekit_url=livekit_url,
             livekit_api_key=os.getenv("LIVEKIT_API_KEY", cls.livekit_api_key),

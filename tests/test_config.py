@@ -144,6 +144,23 @@ class TestAgentEnv:
             assert required in env, f"agent_env missing {required}"
 
 
+class TestGradioConfig:
+    def test_defaults(self) -> None:
+        cfg = Config.from_env()
+        assert cfg.manage_gradio is True
+        assert cfg.gradio_host == "0.0.0.0"
+        assert cfg.gradio_port == 7860
+
+    def test_environment_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MANAGE_GRADIO", "false")
+        monkeypatch.setenv("GRADIO_HOST", "127.0.0.1")
+        monkeypatch.setenv("GRADIO_PORT", "7861")
+        cfg = Config.from_env()
+        assert cfg.manage_gradio is False
+        assert cfg.gradio_host == "127.0.0.1"
+        assert cfg.gradio_port == 7861
+
+
 class TestTtsProviderDefaults:
     def test_bluemagpie_default(self) -> None:
         cfg = Config.from_env()

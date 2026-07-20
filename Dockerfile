@@ -20,7 +20,8 @@ FROM node:20-slim AS frontend
 WORKDIR /app
 RUN corepack enable
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm run build
 
@@ -74,23 +75,32 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Keep Gradio separate so adding or updating the tester does not invalidate the
 # much larger ML dependency layer above.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system gradio
+    uv pip install --system \
+        gradio \
+        "huggingface-hub>=0.34,<1.0"
 
 # vox-box 0.0.21 pins PyAV below 13, while LiveKit requires PyAV 14 or newer.
 # Install the Whisper-specific packages into an isolated import directory so
 # both stacks can coexist in one image. The supervisor exposes this directory
 # only to the Whisper child process.
-RUN python3 -m pip install --no-cache-dir --upgrade "setuptools<80" wheel \
-    && python3 -m pip install --no-cache-dir --no-build-isolation --no-deps \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --upgrade "setuptools<80" wheel \
+    && python3 -m pip install --no-build-isolation --no-deps \
         --target /opt/voxbox "vox-box==0.0.21" \
-    && python3 -m pip install --no-cache-dir --upgrade \
+    && python3 -m pip install --upgrade \
         --target /opt/voxbox "av>=11.0,<13" \
-    && python3 -m pip install --no-cache-dir --no-deps \
+    && python3 -m pip install --no-deps \
         --target /opt/voxbox "faster-whisper==1.0.3" ctranslate2 \
-    && python3 -m pip install --no-cache-dir --upgrade \
+    && python3 -m pip install --upgrade \
         --target /opt/voxbox "modelscope>=1.20,<2.0" "huggingface-hub>=0.34,<1.0"
 
-# Copy application code only after all Python dependency layers are complete.
+# Cache LiveKit model downloads independently from normal application changes.
+# agent.py reads the phone book at import time, so both inputs are copied here.
+COPY local_voice_ai/agent.py ./local_voice_ai/agent.py
+COPY phonebook.csv ./phonebook.csv
+RUN python -m local_voice_ai.agent download-files || true
+
+# Copy application code only after all dependency and model-download layers.
 COPY local_voice_ai ./local_voice_ai
 
 # Drop in the binaries from upstream images.
@@ -115,10 +125,7 @@ COPY --from=livekit-bin /livekit-server /usr/local/bin/livekit-server
 COPY --from=frontend /app/out /app/frontend/out
 ENV FRONTEND_DIR=/app/frontend/out
 
-# Pre-download VAD + turn detector weights so cold start is faster
-RUN python -m local_voice_ai.agent download-files || true
-
-EXPOSE 8080 7880 7881
+EXPOSE 7860 8080 7880 7881
 VOLUME ["/models"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]

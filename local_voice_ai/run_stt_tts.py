@@ -9,6 +9,7 @@ then run this app on the host and use the browser microphone to round-trip:
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import os
 import tempfile
@@ -108,6 +109,7 @@ def synthesize_text(
     tts_base_url: str,
     tts_model: str,
     voice: str,
+    reference_audio: Any,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -134,6 +136,10 @@ def synthesize_text(
         "retry_badcase": retry_badcase,
         "seed": int(seed),
     }
+    if reference_audio is not None:
+        payload["reference_audio"] = base64.b64encode(
+            _audio_to_wav_bytes(reference_audio)
+        ).decode("ascii")
 
     try:
         with httpx.Client(timeout=timeout_s) as client:
@@ -158,6 +164,7 @@ def round_trip(
     tts_base_url: str,
     tts_model: str,
     voice: str,
+    reference_audio: Any,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -175,6 +182,7 @@ def round_trip(
         tts_base_url,
         tts_model,
         voice,
+        reference_audio,
         response_format,
         cfg_value,
         inference_timesteps,
@@ -192,7 +200,7 @@ def build_demo() -> gr.Blocks:
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
     voices = _csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES)
 
-    with gr.Blocks(title="GeoVision STT/TTS API", theme=gr.themes.Glass()) as demo:
+    with gr.Blocks(title="GeoVision STT/TTS API") as demo:
         gr.Markdown("# GeoVision STT/TTS API")
 
         with gr.Row():
@@ -208,7 +216,16 @@ def build_demo() -> gr.Blocks:
 
             with gr.Column():
                 transcript = gr.Textbox(label="Transcript", lines=5)
-                output_audio = gr.Audio(label="TTS output", type="filepath", autoplay=True)
+                reference_audio = gr.Audio(
+                    sources=["microphone", "upload"],
+                    type="numpy",
+                    label="Reference voice (3+ seconds)",
+                )
+                output_audio = gr.Audio(
+                    label="TTS output",
+                    type="filepath",
+                    autoplay=True,
+                )
                 tts_button = gr.Button("Speak transcript", variant="secondary")
 
         gr.Examples(
@@ -294,6 +311,7 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
+                reference_audio,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -315,6 +333,7 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
+                reference_audio,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -337,7 +356,7 @@ def main() -> None:
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 
-    build_demo().launch(server_name=args.host, server_port=args.port, share=args.share)
+    build_demo().launch(server_name=args.host, server_port=args.port, share=args.share, theme=gr.themes.Glass())
 
 
 if __name__ == "__main__":

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import io
 import logging
 import os
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -28,6 +31,7 @@ DEFAULT_CFG_VALUE = float(os.getenv("BLUEMAGPIE_CFG_VALUE", "2.8"))
 DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9"))
 DEFAULT_SEED = int(os.getenv("BLUEMAGPIE_SEED", "1729"))
 FORCED_VOICE = os.getenv("BLUEMAGPIE_FORCE_VOICE", "").strip()
+MAX_REFERENCE_AUDIO_BYTES = 25 * 1024 * 1024
 
 _model = None
 _speaker_table: Optional[dict[str, object]] = None
@@ -207,6 +211,7 @@ class SpeechRequest(BaseModel):
     max_len: int = 2000
     retry_badcase: bool = False
     seed: int = DEFAULT_SEED
+    reference_audio: Optional[str] = None
 
 
 def _speaker_id(voice: str) -> str:
@@ -234,6 +239,23 @@ def _speaker_centroid(voice: str):
     return centroids[speaker_ids.index(speaker_id)]
 
 
+def _decode_reference_audio(value: str) -> bytes:
+    encoded = value.strip()
+    if encoded.startswith("data:"):
+        header, separator, encoded = encoded.partition(",")
+        if not separator or ";base64" not in header:
+            raise ValueError("reference_audio data URL must contain base64 audio")
+    try:
+        audio = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("reference_audio must be valid base64") from exc
+    if not audio:
+        raise ValueError("reference_audio is empty")
+    if len(audio) > MAX_REFERENCE_AUDIO_BYTES:
+        raise ValueError("reference_audio exceeds the 25 MB limit")
+    return audio
+
+
 def _synthesize(
     text: str,
     voice: str,
@@ -243,6 +265,7 @@ def _synthesize(
     max_len: int,
     retry_badcase: bool,
     seed: int,
+    reference_audio: Optional[str],
 ) -> tuple[np.ndarray, int]:
     if _model is None:
         raise RuntimeError("model not loaded")
@@ -256,20 +279,36 @@ def _synthesize(
         "retry_badcase": retry_badcase,
     }
 
-    forced_voice = FORCED_VOICE or voice
-    speaker_id = _speaker_id(forced_voice)
-    centroid = _speaker_centroid(forced_voice)
-    if centroid is not None:
-        kwargs["speaker_centroid"] = centroid
-        logger.info("using speaker centroid id=%s", speaker_id)
+    reference_path: Optional[str] = None
+    if reference_audio:
+        reference_bytes = _decode_reference_audio(reference_audio)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as reference_file:
+            reference_file.write(reference_bytes)
+            reference_path = reference_file.name
+        kwargs["reference_wav_path"] = reference_path
+        logger.info("using reference audio for voice cloning bytes=%d", len(reference_bytes))
     else:
-        logger.warning("speaker centroid for %s not found; using model default speaker", speaker_id)
+        forced_voice = FORCED_VOICE or voice
+        speaker_id = _speaker_id(forced_voice)
+        centroid = _speaker_centroid(forced_voice)
+        if centroid is not None:
+            kwargs["speaker_centroid"] = centroid
+            logger.info("using speaker centroid id=%s", speaker_id)
+        else:
+            logger.warning("speaker centroid for %s not found; using model default speaker", speaker_id)
 
-    with torch.no_grad():
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        audio = _model.generate(**kwargs)
+    try:
+        with torch.no_grad():
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            audio = _model.generate(**kwargs)
+    finally:
+        if reference_path:
+            try:
+                os.unlink(reference_path)
+            except FileNotFoundError:
+                pass
 
     if hasattr(audio, "detach"):
         audio = audio.detach().cpu().numpy()
@@ -304,7 +343,7 @@ async def speech(req: SpeechRequest) -> Response:
     requested_format = req.response_format or "mp3"
     logger.info(
         "tts request chars=%d voice=%s format=%s cfg=%.2f steps=%d min_len=%d "
-        "max_len=%d retry=%s seed=%d",
+        "max_len=%d retry=%s seed=%d clone=%s",
         len(req.input),
         voice,
         requested_format,
@@ -314,6 +353,7 @@ async def speech(req: SpeechRequest) -> Response:
         req.max_len,
         req.retry_badcase,
         req.seed,
+        bool(req.reference_audio),
     )
     try:
         audio, sample_rate = _synthesize(
@@ -325,7 +365,10 @@ async def speech(req: SpeechRequest) -> Response:
             req.max_len,
             req.retry_badcase,
             req.seed,
+            req.reference_audio,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("synthesis failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

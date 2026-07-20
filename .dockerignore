@@ -1,0 +1,17 @@
+**
+!Dockerfile
+!pyproject.toml
+!phonebook.csv
+!local_voice_ai/
+!local_voice_ai/**
+!frontend/
+!frontend/**
+
+# Generated frontend directories are never build inputs.
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Python caches inside included source directories.
+**/__pycache__/
+**/*.py[cod]
