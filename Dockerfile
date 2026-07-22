@@ -33,9 +33,12 @@ FROM ${LIVEKIT_IMAGE} AS livekit-bin
 # ---------------- runtime ----------------
 FROM ${PYTHON_BASE} AS runtime
 
+ARG DEBIAN_FRONTEND=noninteractive
 ARG INSTALL_JETSON_INFERENCE=0
 ARG JETSON_INFERENCE_REPO=https://github.com/dusty-nv/jetson-inference.git
 ARG JETSON_INFERENCE_REF=master
+ARG CTRANSLATE2_VERSION=v4.5.0
+ARG CTRANSLATE2_BUILD_JOBS=2
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -73,6 +76,7 @@ RUN if [ "${INSTALL_JETSON_INFERENCE}" = "1" ]; then \
             libgstreamer-plugins-bad1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             libgstreamer1.0-dev \
+            libopenblas-dev \
             libpython3-dev \
             python3-dev \
             python3-numpy; \
@@ -138,9 +142,56 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python3 -m pip install --upgrade \
         --target /opt/voxbox "av>=11.0,<13" \
     && python3 -m pip install --no-deps \
-        --target /opt/voxbox "faster-whisper==1.0.3" ctranslate2 \
+        --target /opt/voxbox "faster-whisper==1.0.3" "ctranslate2==4.5.0" \
     && python3 -m pip install --upgrade \
-        --target /opt/voxbox "modelscope>=1.20,<2.0" "huggingface-hub>=0.34,<1.0"
+        --target /opt/voxbox \
+        "numpy>=1.24,<2" \
+        "modelscope>=1.20,<2.0" \
+        "huggingface-hub>=0.34,<1.0"
+
+# vox-box imports every backend at startup.  Its Dia TTS backend is not used by
+# this image (BlueMagpie provides TTS), and Dia is unsupported on ARM, but that
+# eager import otherwise loads an incompatible public torchaudio CUDA wheel.
+COPY docker/voxbox_dia_stub.py /opt/voxbox/vox_box/backends/tts/dia.py
+
+# PyPI's AArch64 CTranslate2 wheel is CPU-only.  Build the Python extension and
+# shared library against the CUDA/cuDNN toolchain supplied by the Jetson NGC
+# image.  CTranslate2 4.5 is the first release supporting cuDNN 9.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "${PRESERVE_BASE_TORCH}" = "1" ]; then \
+        git clone --recursive --depth=1 --branch "${CTRANSLATE2_VERSION}" \
+            https://github.com/OpenNMT/CTranslate2.git /tmp/ctranslate2; \
+        cmake -S /tmp/ctranslate2 -B /tmp/ctranslate2/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/ctranslate2 \
+            -DCMAKE_CUDA_ARCHITECTURES=87 \
+            -DCUDA_ARCH_LIST=87 \
+            -DBUILD_CLI=OFF \
+            -DBUILD_SHARED_LIBS=ON \
+            -DOPENMP_RUNTIME=COMP \
+            -DWITH_CUDA=ON \
+            -DWITH_CUDNN=ON \
+            -DWITH_FLASH_ATTN=OFF \
+            -DWITH_MKL=OFF \
+            -DWITH_OPENBLAS=ON; \
+        grep -q '^WITH_CUDA:BOOL=ON$' /tmp/ctranslate2/build/CMakeCache.txt; \
+        cmake --build /tmp/ctranslate2/build --parallel "${CTRANSLATE2_BUILD_JOBS}"; \
+        cmake --install /tmp/ctranslate2/build; \
+        python3 -m pip install -r /tmp/ctranslate2/python/install_requirements.txt; \
+        cd /tmp/ctranslate2/python; \
+        CTRANSLATE2_ROOT=/opt/ctranslate2 python3 setup.py bdist_wheel \
+            --dist-dir /tmp/ctranslate2-wheel; \
+        cd /app; \
+        rm -rf /opt/voxbox/ctranslate2 /opt/voxbox/ctranslate2-*.dist-info; \
+        python3 -m pip install --no-deps --force-reinstall \
+            /tmp/ctranslate2-wheel/*.whl; \
+        PYTHONPATH=/opt/voxbox LD_LIBRARY_PATH=/opt/ctranslate2/lib:${LD_LIBRARY_PATH} \
+            python3 -c 'import ctranslate2; print(f"Installed CTranslate2 {ctranslate2.__version__} from {ctranslate2.__file__}"); assert "/usr/local/lib/python" in ctranslate2.__file__'; \
+        rm -rf /tmp/ctranslate2 /tmp/ctranslate2-wheel; \
+        ldconfig; \
+    fi
+
+ENV LD_LIBRARY_PATH=/opt/ctranslate2/lib:${LD_LIBRARY_PATH}
 
 # The 24.07 Jetson/iGPU image's torchvision extension can be incompatible with
 # its NVIDIA development build of torch (for example, torchvision::nms is not

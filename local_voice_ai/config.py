@@ -81,7 +81,7 @@ class Config:
     manage_llama: bool = True
 
     # --- STT (Nemotron by default) --------------------------------------
-    stt_provider: str = "nemotron"  # "nemotron" | "whisper"
+    stt_provider: str = "nemotron"  # "nemotron" | "whisper" | "none"
     stt_base_url: str = "http://127.0.0.1:8000/v1"
     stt_model: str = "nemotron-speech-streaming"
     stt_api_key: str = "no-key-needed"
@@ -180,7 +180,11 @@ class Config:
             stt_api_key=os.getenv("STT_API_KEY", cls.stt_api_key),
             stt_language=os.getenv("STT_LANGUAGE", cls.stt_language),
             stt_bind_port=int(os.getenv("STT_BIND_PORT", str(cls.stt_bind_port))),
-            manage_stt=_env_bool("MANAGE_STT", _is_loopback(stt_base_url)),
+            manage_stt=_env_bool(
+                "MANAGE_STT",
+                _is_loopback(stt_base_url)
+                and stt_provider not in {"none", "off", "disabled"},
+            ),
             nemotron_model_name=os.getenv("NEMOTRON_MODEL_NAME", cls.nemotron_model_name),
             nemotron_model_id=os.getenv("NEMOTRON_MODEL_ID", cls.nemotron_model_id),
             nemotron_language=os.getenv("NEMOTRON_LANGUAGE", cls.nemotron_language),

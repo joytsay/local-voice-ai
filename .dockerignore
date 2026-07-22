@@ -2,6 +2,8 @@
 !Dockerfile
 !pyproject.toml
 !phonebook.csv
+!docker/
+!docker/**
 !local_voice_ai/
 !local_voice_ai/**
 !frontend/

@@ -1,6 +1,8 @@
 services:
   app:
-    gpus: all
+    # JetPack's CSV-mode NVIDIA hook requires selecting the NVIDIA runtime
+    # instead of Docker's generic `gpus: all` device request.
+    runtime: nvidia
     environment:
       DEVICE: ${DEVICE:-cuda}
       NEMOTRON_DEVICE: ${NEMOTRON_DEVICE:-cpu}

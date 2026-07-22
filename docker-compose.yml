@@ -47,10 +47,12 @@ services:
       MANAGE_LLAMA: ${MANAGE_LLAMA:-0}
       STT_PROVIDER: ${STT_PROVIDER:-whisper}
       STT_LANGUAGE: ${STT_LANGUAGE:-auto}
+      STT_PUBLIC_PORT: ${STT_PUBLIC_PORT:-8000}
       VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cuda}
       NEMOTRON_LANGUAGE: ${NEMOTRON_LANGUAGE:-zh-CN}
       TTS_PROVIDER: ${TTS_PROVIDER:-bluemagpie}
       TTS_VOICE: ${TTS_VOICE:-chinese_female}
+      TTS_PUBLIC_PORT: ${TTS_PUBLIC_PORT:-8800}
       BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cuda}
       BLUEMAGPIE_MODEL_NAME: ${BLUEMAGPIE_MODEL_NAME:-OpenFormosa/BlueMagpie-TTS}
       BLUEMAGPIE_FORCE_VOICE: ${BLUEMAGPIE_FORCE_VOICE:-}
@@ -68,6 +70,8 @@ services:
     ports:
       - "${WEB_PORT:-8080}:8080"
       - "${GRADIO_PORT:-7860}:7860"
+      - "${STT_PUBLIC_PORT:-8000}:8000"
+      - "${TTS_PUBLIC_PORT:-8800}:8880"
       - "${LIVEKIT_BIND_PORT:-7880}:7880"
       - "${LIVEKIT_RTC_PORT:-7881}:7881"
       # WebRTC media over UDP. The host port must equal the container port
@@ -75,8 +79,8 @@ services:
       - "${LIVEKIT_UDP_PORT:-7882}:7882/udp"
     volumes:
       - ./local_voice_ai:/app/local_voice_ai:ro
-      - /home/joy/Git/local-voice-ai/models:/models
-      - /home/joy/Git/local-voice-ai/models/voxbox:/data
+      - ./models:/models
+      - ./models/voxbox:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz > /dev/null"]
       interval: 10s

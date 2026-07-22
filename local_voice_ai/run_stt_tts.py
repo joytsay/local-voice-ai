@@ -19,14 +19,17 @@ import threading
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import gradio as gr
 import httpx
 import soundfile as sf
 
 
-DEFAULT_STT_BASE_URL = os.getenv("STT_BASE_URL", "http://127.0.0.1:8000/v1")
-DEFAULT_TTS_BASE_URL = os.getenv("TTS_BASE_URL", "http://127.0.0.1:8880/v1")
+STT_PUBLIC_PORT = int(os.getenv("STT_PUBLIC_PORT", "8000"))
+TTS_PUBLIC_PORT = int(os.getenv("TTS_PUBLIC_PORT", "8800"))
+DEFAULT_STT_BASE_URL = os.getenv("STT_BASE_URL", f"http://127.0.0.1:{STT_PUBLIC_PORT}/v1")
+DEFAULT_TTS_BASE_URL = os.getenv("TTS_BASE_URL", f"http://127.0.0.1:{TTS_PUBLIC_PORT}/v1")
 DEFAULT_STT_MODELS = [
     "Systran/faster-whisper-small",
     "nemotron-3.5-asr-streaming",
@@ -41,6 +44,29 @@ DEFAULT_VOICES = [
 ]
 VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
 _MANIFEST_LOCK = threading.Lock()
+
+
+def _endpoint_defaults_for_request(request: gr.Request) -> tuple[str, str]:
+    """Use the hostname that the browser used to reach Gradio."""
+    headers = request.headers
+    authority = (
+        headers.get("x-forwarded-host")
+        or headers.get("host")
+        or "127.0.0.1"
+    ).split(",", 1)[0].strip()
+    hostname = urlsplit(f"//{authority}").hostname or "127.0.0.1"
+    display_host = f"[{hostname}]" if ":" in hostname else hostname
+    scheme = headers.get("x-forwarded-proto", "http").split(",", 1)[0].strip()
+
+    stt_url = os.getenv(
+        "STT_BASE_URL",
+        f"{scheme}://{display_host}:{STT_PUBLIC_PORT}/v1",
+    )
+    tts_url = os.getenv(
+        "TTS_BASE_URL",
+        f"{scheme}://{display_host}:{TTS_PUBLIC_PORT}/v1",
+    )
+    return stt_url, tts_url
 
 
 def _csv_env(name: str, default: list[str]) -> list[str]:
@@ -503,6 +529,10 @@ def build_demo() -> gr.Blocks:
             _refresh_voice_dropdown,
             inputs=voice,
             outputs=voice,
+        )
+        demo.load(
+            _endpoint_defaults_for_request,
+            outputs=[stt_base_url, tts_base_url],
         )
 
     return demo

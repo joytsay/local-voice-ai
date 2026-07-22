@@ -23,7 +23,8 @@ dependencies = [
 
     # Nemotron STT (full deps live behind 'stt' extra to avoid forcing torch
     # into every venv during dev)
-    "numpy",
+    # NVIDIA's Jetson PyTorch 24.07 build uses the NumPy 1.x C ABI.
+    "numpy>=1.24,<2",
     "soundfile",
     "python-multipart",
 ]

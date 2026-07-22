@@ -141,6 +141,7 @@ async def my_agent(ctx: JobContext) -> None:
     echo_mode = _env_bool("ECHO_MODE")
 
     stt_provider = os.getenv("STT_PROVIDER", "nemotron").lower()
+    stt_disabled = stt_provider in {"none", "off", "disabled"}
     if stt_provider == "whisper":
         default_stt_base_url = "http://127.0.0.1:8000/v1"
         default_stt_model = "Systran/faster-whisper-small"
@@ -162,12 +163,15 @@ async def my_agent(ctx: JobContext) -> None:
         stt_provider, stt_model, llama_base_url, llama_model, tts_base_url, echo_mode,
     )
 
-    stt_kwargs = {"base_url": stt_base_url, "model": stt_model, "api_key": stt_api_key}
-    if "language" in inspect.signature(openai.STT).parameters:
-        stt_kwargs["language"] = stt_language
+    stt_plugin = None
+    if not stt_disabled:
+        stt_kwargs = {"base_url": stt_base_url, "model": stt_model, "api_key": stt_api_key}
+        if "language" in inspect.signature(openai.STT).parameters:
+            stt_kwargs["language"] = stt_language
+        stt_plugin = openai.STT(**stt_kwargs)
 
     session_kwargs = {
-        "stt": openai.STT(**stt_kwargs),
+        "stt": stt_plugin,
         # The model name selects the wire protocol the openai TTS plugin uses:
         # only {"tts-1", "tts-1-hd"} use the raw-audio-bytes stream that the
         # Kokoro server speaks. Any other name (e.g. "kokoro") routes the plugin

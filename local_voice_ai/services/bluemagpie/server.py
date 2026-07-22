@@ -18,6 +18,53 @@ from typing import Optional
 import numpy as np
 import soundfile as sf
 import torch
+
+
+def _install_sdpa_gqa_compat() -> None:
+    """Backport ``enable_gqa`` for NVIDIA's older Jetson PyTorch build."""
+    original_sdpa = torch.nn.functional.scaled_dot_product_attention
+    probe = torch.zeros((1, 1, 1, 1))
+    try:
+        original_sdpa(probe, probe, probe, enable_gqa=False)
+    except TypeError as exc:
+        if "enable_gqa" not in str(exc):
+            raise
+    else:
+        return
+
+    def scaled_dot_product_attention_compat(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *args: object,
+        enable_gqa: bool = False,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        if enable_gqa:
+            query_heads = query.size(-3)
+            key_heads = key.size(-3)
+            value_heads = value.size(-3)
+            if key_heads != value_heads:
+                raise ValueError(
+                    "Grouped-query attention requires matching key/value head counts"
+                )
+            if query_heads % key_heads:
+                raise ValueError(
+                    "Grouped-query attention requires query heads to be divisible "
+                    "by key/value heads"
+                )
+            repeats = query_heads // key_heads
+            if repeats > 1:
+                key = key.repeat_interleave(repeats, dim=-3)
+                value = value.repeat_interleave(repeats, dim=-3)
+        return original_sdpa(query, key, value, *args, **kwargs)
+
+    torch.nn.functional.scaled_dot_product_attention = (
+        scaled_dot_product_attention_compat
+    )
+
+
+_install_sdpa_gqa_compat()
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -159,7 +206,10 @@ def _load_model() -> None:
         if _model_dir is None:
             from huggingface_hub import snapshot_download
 
-            _model_dir = snapshot_download(MODEL_NAME, token=token)
+    if os.path.isdir(MODEL_NAME):
+        logger.info("Loading BlueMagpie from local snapshot: %s", _model_dir)
+    else:
+        _model_dir = snapshot_download(MODEL_NAME, token=token)
     logger.info("using BlueMagpie model directory %s", _model_dir)
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_file=os.path.join(_model_dir, "tokenizer.json")
