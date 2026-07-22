@@ -11,8 +11,12 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import json
 import os
+import re
 import tempfile
+import threading
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +39,8 @@ DEFAULT_VOICES = [
     "hung_yi_lee",
     "female_voice",
 ]
+VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
+_MANIFEST_LOCK = threading.Lock()
 
 
 def _csv_env(name: str, default: list[str]) -> list[str]:
@@ -43,6 +49,92 @@ def _csv_env(name: str, default: list[str]) -> list[str]:
         return default
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return values or default
+
+
+def _load_clone_manifest() -> dict[str, Any]:
+    try:
+        manifest = json.loads(
+            (VOICE_CLONE_DIR / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"voices": []}
+    return manifest if isinstance(manifest.get("voices"), list) else {"voices": []}
+
+
+def _voice_options(defaults: list[str]) -> list[str]:
+    clone_ids = [
+        str(entry["id"])
+        for entry in _load_clone_manifest()["voices"]
+        if entry.get("id")
+        and (VOICE_CLONE_DIR / str(entry.get("reference_wav", ""))).is_file()
+    ]
+    return list(dict.fromkeys([*defaults, *clone_ids]))
+
+
+def _refresh_voice_dropdown(selected_voice: str) -> Any:
+    choices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
+    value = selected_voice if selected_voice in choices else choices[0]
+    return gr.Dropdown(choices=choices, value=value)
+
+
+def _clone_id(name: str) -> str:
+    clone_id = re.sub(r"[^\w-]+", "_", (name or "").strip(), flags=re.UNICODE)
+    clone_id = clone_id.strip("_").lower()[:64]
+    if not clone_id:
+        raise gr.Error("Enter a clone voice name.")
+    if clone_id in DEFAULT_VOICES:
+        raise gr.Error(f"The built-in voice name {clone_id!r} cannot be replaced.")
+    return clone_id
+
+
+def _save_clone_profile(name: str, audio: Any) -> tuple[str, str]:
+    clone_id = _clone_id(name)
+    wav_bytes = _audio_to_wav_bytes(audio)
+    VOICE_CLONE_DIR.mkdir(parents=True, exist_ok=True)
+    wav_name = f"{clone_id}.wav"
+    wav_path = VOICE_CLONE_DIR / wav_name
+    archive_path = VOICE_CLONE_DIR / f"{clone_id}.zip"
+
+    with _MANIFEST_LOCK:
+        with tempfile.NamedTemporaryFile(
+            dir=VOICE_CLONE_DIR,
+            suffix=".wav.tmp",
+            delete=False,
+        ) as temporary_wav:
+            temporary_wav.write(wav_bytes)
+            temporary_wav_path = Path(temporary_wav.name)
+        os.replace(temporary_wav_path, wav_path)
+
+        profile = {
+            "id": clone_id,
+            "name": name.strip(),
+            "reference_wav": wav_name,
+            "provider": "bluemagpie",
+            "mode": "reference_audio",
+        }
+        manifest = _load_clone_manifest()
+        manifest["voices"] = [
+            entry for entry in manifest["voices"] if entry.get("id") != clone_id
+        ]
+        manifest["voices"].append(profile)
+
+        manifest_tmp = VOICE_CLONE_DIR / "manifest.json.tmp"
+        manifest_tmp.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(manifest_tmp, VOICE_CLONE_DIR / "manifest.json")
+
+        archive_tmp = VOICE_CLONE_DIR / f"{clone_id}.zip.tmp"
+        with zipfile.ZipFile(archive_tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(wav_path, arcname="reference.wav")
+            archive.writestr(
+                "profile.json",
+                json.dumps(profile, ensure_ascii=False, indent=2) + "\n",
+            )
+        os.replace(archive_tmp, archive_path)
+
+    return clone_id, str(archive_path)
 
 
 def _audio_to_wav_bytes(audio: Any) -> bytes:
@@ -109,7 +201,6 @@ def synthesize_text(
     tts_base_url: str,
     tts_model: str,
     voice: str,
-    reference_audio: Any,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -118,6 +209,7 @@ def synthesize_text(
     retry_badcase: bool,
     seed: int,
     timeout_s: float,
+    reference_audio: Any = None,
 ) -> str:
     text = (text or "").strip()
     if not text:
@@ -164,7 +256,6 @@ def round_trip(
     tts_base_url: str,
     tts_model: str,
     voice: str,
-    reference_audio: Any,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -182,7 +273,6 @@ def round_trip(
         tts_base_url,
         tts_model,
         voice,
-        reference_audio,
         response_format,
         cfg_value,
         inference_timesteps,
@@ -195,10 +285,56 @@ def round_trip(
     return transcript, output_audio
 
 
+def clone_voice(
+    audio: Any,
+    clone_name: str,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    tts_base_url: str,
+    tts_model: str,
+    voice: str,
+    response_format: str,
+    cfg_value: float,
+    inference_timesteps: int,
+    min_len: int,
+    max_len: int,
+    retry_badcase: bool,
+    seed: int,
+    timeout_s: float,
+) -> tuple[str, str, Any, str]:
+    transcript = transcribe_audio(audio, stt_base_url, stt_model, language, timeout_s)
+    if not transcript:
+        raise gr.Error("STT returned an empty transcript, so voice cloning was skipped.")
+    clone_id, archive_path = _save_clone_profile(clone_name, audio)
+    output_audio = synthesize_text(
+        transcript,
+        tts_base_url,
+        tts_model,
+        voice,
+        response_format,
+        cfg_value,
+        inference_timesteps,
+        min_len,
+        max_len,
+        retry_badcase,
+        seed,
+        timeout_s,
+        reference_audio=audio,
+    )
+    voice_choices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
+    return (
+        transcript,
+        output_audio,
+        gr.Dropdown(choices=voice_choices, value=clone_id),
+        archive_path,
+    )
+
+
 def build_demo() -> gr.Blocks:
     stt_models = _csv_env("STT_MODEL_OPTIONS", DEFAULT_STT_MODELS)
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
-    voices = _csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES)
+    voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
 
     with gr.Blocks(title="GeoVision STT/TTS API") as demo:
         gr.Markdown("# GeoVision STT/TTS API")
@@ -213,14 +349,12 @@ def build_demo() -> gr.Blocks:
                 with gr.Row():
                     stt_button = gr.Button("Transcribe", variant="secondary")
                     round_trip_button = gr.Button("Transcribe + Speak", variant="primary")
+                clone_name = gr.Textbox(label="Clone voice name")
+                clone_voice_button = gr.Button("Clone voice", variant="secondary")
+                clone_download = gr.DownloadButton("Download cloned voice")
 
             with gr.Column():
                 transcript = gr.Textbox(label="Transcript", lines=5)
-                reference_audio = gr.Audio(
-                    sources=["microphone", "upload"],
-                    type="numpy",
-                    label="Reference voice (3+ seconds)",
-                )
                 output_audio = gr.Audio(
                     label="TTS output",
                     type="filepath",
@@ -311,7 +445,6 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
-                reference_audio,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -333,7 +466,6 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
-                reference_audio,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -344,6 +476,33 @@ def build_demo() -> gr.Blocks:
                 timeout_s,
             ],
             outputs=[transcript, output_audio],
+        )
+        clone_voice_button.click(
+            clone_voice,
+            inputs=[
+                audio,
+                clone_name,
+                stt_base_url,
+                stt_model,
+                language,
+                tts_base_url,
+                tts_model,
+                voice,
+                response_format,
+                cfg_value,
+                inference_timesteps,
+                min_len,
+                max_len,
+                retry_badcase,
+                seed,
+                timeout_s,
+            ],
+            outputs=[transcript, output_audio, voice, clone_download],
+        )
+        demo.load(
+            _refresh_voice_dropdown,
+            inputs=voice,
+            outputs=voice,
         )
 
     return demo
@@ -356,7 +515,13 @@ def main() -> None:
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 
-    build_demo().launch(server_name=args.host, server_port=args.port, share=args.share, theme=gr.themes.Glass())
+    build_demo().launch(
+        server_name=args.host,
+        server_port=args.port,
+        share=args.share,
+        theme=gr.themes.Glass(),
+        allowed_paths=[str(VOICE_CLONE_DIR)],
+    )
 
 
 if __name__ == "__main__":

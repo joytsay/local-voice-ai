@@ -1,5 +1,6 @@
 services:
   app:
+    container_name: local-voice-ai
     build:
       context: .
       args:
@@ -16,13 +17,19 @@ services:
           # LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b7205 \
           # PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
           # TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+          # For NVIDIA Jetson, use PYTHON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu
+          # with INSTALL_JETSON_INFERENCE=1 and PRESERVE_BASE_TORCH=1.
           # GPU_LLAMA_N_GPU_LAYERS=3 \
           # COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
           # docker compose up --build
         LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
         LIVEKIT_IMAGE: ${LIVEKIT_IMAGE:-livekit/livekit-server:latest}
         PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+        INSTALL_JETSON_INFERENCE: ${INSTALL_JETSON_INFERENCE:-0}
+        JETSON_INFERENCE_REPO: ${JETSON_INFERENCE_REPO:-https://github.com/dusty-nv/jetson-inference.git}
+        JETSON_INFERENCE_REF: ${JETSON_INFERENCE_REF:-master}
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        PRESERVE_BASE_TORCH: ${PRESERVE_BASE_TORCH:-0}
     env_file:
       - .env
     environment:
@@ -36,6 +43,7 @@ services:
       MANAGE_GRADIO: ${MANAGE_GRADIO:-1}
       GRADIO_HOST: ${GRADIO_HOST:-0.0.0.0}
       GRADIO_PORT: ${GRADIO_PORT:-7860}
+      VOICE_CLONE_DIR: ${VOICE_CLONE_DIR:-/models/voice_clones}
       MANAGE_LLAMA: ${MANAGE_LLAMA:-0}
       STT_PROVIDER: ${STT_PROVIDER:-whisper}
       STT_LANGUAGE: ${STT_LANGUAGE:-auto}

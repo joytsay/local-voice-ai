@@ -10,6 +10,7 @@
 # Build args:
 #   --build-arg LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda  (for GPU)
 #   --build-arg PYTHON_BASE=python:3.11-slim                        (or nvidia/cuda...)
+#   --build-arg INSTALL_JETSON_INFERENCE=1                          (for Jetson)
 
 ARG LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server
 ARG LIVEKIT_IMAGE=livekit/livekit-server:latest
@@ -32,6 +33,10 @@ FROM ${LIVEKIT_IMAGE} AS livekit-bin
 # ---------------- runtime ----------------
 FROM ${PYTHON_BASE} AS runtime
 
+ARG INSTALL_JETSON_INFERENCE=0
+ARG JETSON_INFERENCE_REPO=https://github.com/dusty-nv/jetson-inference.git
+ARG JETSON_INFERENCE_REF=master
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
@@ -52,12 +57,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
+# On Jetson, turn the NVIDIA PyTorch image into a jetson-inference base before
+# installing local-voice-ai.  Cloning recursively is required because
+# jetson-inference carries jetson-utils as a git submodule.
+RUN if [ "${INSTALL_JETSON_INFERENCE}" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            cmake \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-rtp \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-tools \
+            libgstreamer-plugins-bad1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev \
+            libpython3-dev \
+            python3-dev \
+            python3-numpy; \
+        git clone --recursive --depth=1 --branch "${JETSON_INFERENCE_REF}" \
+            "${JETSON_INFERENCE_REPO}" /opt/jetson-inference; \
+        cmake -S /opt/jetson-inference -B /opt/jetson-inference/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_INTERACTIVE=OFF; \
+        cmake --build /opt/jetson-inference/build --parallel "$(nproc)"; \
+        cmake --install /opt/jetson-inference/build; \
+        ldconfig; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 WORKDIR /app
 
 # Install Python deps via uv for speed and a reproducible env
 RUN python3 -m pip install --no-cache-dir uv
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG PRESERVE_BASE_TORCH=0
 
 # Copy only project metadata and a minimal package skeleton first. Application
 # source is copied after dependency installation so normal code edits do not
@@ -65,12 +101,24 @@ ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 COPY pyproject.toml ./
 RUN mkdir -p local_voice_ai && touch local_voice_ai/__init__.py
 
-# Install: torch (with explicit index for CPU/CUDA selection) + the [ml] extras
-# in a single resolution pass so versions are consistent.
+# Install the ML extras in one resolution pass. Jetson PyTorch images contain
+# NVIDIA-specific torch builds which must not be replaced by packages from the
+# public PyTorch indexes. In that mode, constrain uv to the versions already in
+# the base image and do not expose an external torch index to the resolver.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --index-strategy unsafe-best-match \
-        --extra-index-url ${TORCH_INDEX_URL} \
-        ".[ml]"
+    if [ "${PRESERVE_BASE_TORCH}" = "1" ]; then \
+        python3 -c 'from importlib.metadata import distributions; wanted = {"torch", "torchvision", "torchaudio"}; installed = {dist.metadata["Name"].lower(): dist.version for dist in distributions() if dist.metadata["Name"]}; print("\n".join(f"{name}=={installed[name]}" for name in sorted(wanted & installed.keys())))' \
+            > /tmp/base-torch-constraints.txt; \
+        grep -q '^torch==' /tmp/base-torch-constraints.txt || \
+            { echo "PRESERVE_BASE_TORCH=1 requires torch in PYTHON_BASE" >&2; exit 1; }; \
+        uv pip install --system \
+            --constraint /tmp/base-torch-constraints.txt \
+            ".[ml]"; \
+    else \
+        uv pip install --system --index-strategy unsafe-best-match \
+            --extra-index-url "${TORCH_INDEX_URL}" \
+            ".[ml]"; \
+    fi
 
 # Keep Gradio separate so adding or updating the tester does not invalidate the
 # much larger ML dependency layer above.
@@ -93,6 +141,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --target /opt/voxbox "faster-whisper==1.0.3" ctranslate2 \
     && python3 -m pip install --upgrade \
         --target /opt/voxbox "modelscope>=1.20,<2.0" "huggingface-hub>=0.34,<1.0"
+
+# The 24.07 Jetson/iGPU image's torchvision extension can be incompatible with
+# its NVIDIA development build of torch (for example, torchvision::nms is not
+# registered).  Neither Whisper nor BlueMagpie needs torchvision, but recent
+# transformers versions import it opportunistically and then fail before the
+# audio models can load.  Remove only torchvision in the Jetson mode while
+# preserving the NVIDIA torch and torchaudio packages.
+RUN if [ "${PRESERVE_BASE_TORCH}" = "1" ]; then \
+        python3 -m pip uninstall -y torchvision; \
+    fi
 
 # Cache LiveKit model downloads independently from normal application changes.
 # agent.py reads the phone book at import time, so both inputs are copied here.

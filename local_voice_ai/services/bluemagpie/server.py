@@ -6,11 +6,13 @@ import argparse
 import base64
 import binascii
 import io
+import json
 import logging
 import os
 import tempfile
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -32,6 +34,7 @@ DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9
 DEFAULT_SEED = int(os.getenv("BLUEMAGPIE_SEED", "1729"))
 FORCED_VOICE = os.getenv("BLUEMAGPIE_FORCE_VOICE", "").strip()
 MAX_REFERENCE_AUDIO_BYTES = 25 * 1024 * 1024
+VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
 
 _model = None
 _speaker_table: Optional[dict[str, object]] = None
@@ -239,6 +242,25 @@ def _speaker_centroid(voice: str):
     return centroids[speaker_ids.index(speaker_id)]
 
 
+def _clone_reference_path(voice: str) -> Optional[str]:
+    manifest_path = VOICE_CLONE_DIR / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+    clone_root = VOICE_CLONE_DIR.resolve()
+    for entry in manifest.get("voices", []):
+        if entry.get("id") != voice:
+            continue
+        reference_path = (VOICE_CLONE_DIR / str(entry.get("reference_wav", ""))).resolve()
+        if clone_root not in reference_path.parents or not reference_path.is_file():
+            logger.warning("invalid reference path for cloned voice %s", voice)
+            return None
+        return str(reference_path)
+    return None
+
+
 def _decode_reference_audio(value: str) -> bytes:
     encoded = value.strip()
     if encoded.startswith("data:"):
@@ -289,13 +311,21 @@ def _synthesize(
         logger.info("using reference audio for voice cloning bytes=%d", len(reference_bytes))
     else:
         forced_voice = FORCED_VOICE or voice
-        speaker_id = _speaker_id(forced_voice)
-        centroid = _speaker_centroid(forced_voice)
-        if centroid is not None:
-            kwargs["speaker_centroid"] = centroid
-            logger.info("using speaker centroid id=%s", speaker_id)
+        clone_reference_path = _clone_reference_path(forced_voice)
+        if clone_reference_path:
+            kwargs["reference_wav_path"] = clone_reference_path
+            logger.info("using saved cloned voice id=%s", forced_voice)
         else:
-            logger.warning("speaker centroid for %s not found; using model default speaker", speaker_id)
+            speaker_id = _speaker_id(forced_voice)
+            centroid = _speaker_centroid(forced_voice)
+            if centroid is not None:
+                kwargs["speaker_centroid"] = centroid
+                logger.info("using speaker centroid id=%s", speaker_id)
+            else:
+                logger.warning(
+                    "speaker centroid for %s not found; using model default speaker",
+                    speaker_id,
+                )
 
     try:
         with torch.no_grad():

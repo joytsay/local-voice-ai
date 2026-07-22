@@ -48,6 +48,28 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml 
 docker compose up --build
 ```
 
+### NO LLM
+#### GPU (NVIDIA)
+```sh
+ECHO_MODE=1 STT_PROVIDER=whisper STT_LANGUAGE=zh BLUEMAGPIE_DEVICE=cuda BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/78b3cbe95ed6f3097a07b5894444998c3f879075  
+PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml docker compose up --build
+```
+
+#### AGX (JETSON)
+```sh
+ECHO_MODE=1 \
+STT_PROVIDER=whisper \
+STT_LANGUAGE=zh \
+BLUEMAGPIE_DEVICE=cuda \
+BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/78b3cbe95ed6f3097a07b5894444998c3f879075 \
+PYTHON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu \
+INSTALL_JETSON_INFERENCE=1 \
+PRESERVE_BASE_TORCH=1 \
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose up --build
+```
+
 ### Apple Silicon
 
 The CPU image works as-is. `llama-server` uses Metal automatically through its bundled binary.
