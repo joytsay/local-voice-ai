@@ -47,8 +47,14 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/models \
     XDG_CACHE_HOME=/models
 
+# Keep downloaded package archives in BuildKit's cache when an APT layer is
+# invalidated. The cache mounts are not included in the resulting image.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
 # System libs needed by the inference stack and the binaries
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
         curl \
@@ -57,13 +63,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libsndfile1 \
         libgomp1 \
         python3-pip \
-        tini \
-    && rm -rf /var/lib/apt/lists/*
+        tini
 
 # On Jetson, turn the NVIDIA PyTorch image into a jetson-inference base before
 # installing local-voice-ai.  Cloning recursively is required because
 # jetson-inference carries jetson-utils as a git submodule.
-RUN if [ "${INSTALL_JETSON_INFERENCE}" = "1" ]; then \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    if [ "${INSTALL_JETSON_INFERENCE}" = "1" ]; then \
         apt-get update && apt-get install -y --no-install-recommends \
             cmake \
             gstreamer1.0-libav \
@@ -88,7 +95,6 @@ RUN if [ "${INSTALL_JETSON_INFERENCE}" = "1" ]; then \
         cmake --build /opt/jetson-inference/build --parallel "$(nproc)"; \
         cmake --install /opt/jetson-inference/build; \
         ldconfig; \
-        rm -rf /var/lib/apt/lists/*; \
     fi
 
 WORKDIR /app
@@ -135,15 +141,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Install the Whisper-specific packages into an isolated import directory so
 # both stacks can coexist in one image. The supervisor exposes this directory
 # only to the Whisper child process.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install --upgrade "setuptools<80" wheel \
-    && python3 -m pip install --no-build-isolation --no-deps \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /usr/bin/python3 "setuptools<80" wheel \
+    && uv pip install --python /usr/bin/python3 --no-build-isolation --no-deps \
         --target /opt/voxbox "vox-box==0.0.21" \
-    && python3 -m pip install --upgrade \
+    && uv pip install --python /usr/bin/python3 --upgrade \
         --target /opt/voxbox "av>=11.0,<13" \
-    && python3 -m pip install --no-deps \
+    && uv pip install --python /usr/bin/python3 --no-deps \
         --target /opt/voxbox "faster-whisper==1.0.3" "ctranslate2==4.5.0" \
-    && python3 -m pip install --upgrade \
+    && uv pip install --python /usr/bin/python3 --upgrade \
         --target /opt/voxbox \
         "numpy>=1.24,<2" \
         "modelscope>=1.20,<2.0" \
@@ -157,7 +163,7 @@ COPY docker/voxbox_dia_stub.py /opt/voxbox/vox_box/backends/tts/dia.py
 # PyPI's AArch64 CTranslate2 wheel is CPU-only.  Build the Python extension and
 # shared library against the CUDA/cuDNN toolchain supplied by the Jetson NGC
 # image.  CTranslate2 4.5 is the first release supporting cuDNN 9.
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "${PRESERVE_BASE_TORCH}" = "1" ]; then \
         git clone --recursive --depth=1 --branch "${CTRANSLATE2_VERSION}" \
             https://github.com/OpenNMT/CTranslate2.git /tmp/ctranslate2; \
@@ -177,16 +183,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         grep -q '^WITH_CUDA:BOOL=ON$' /tmp/ctranslate2/build/CMakeCache.txt; \
         cmake --build /tmp/ctranslate2/build --parallel "${CTRANSLATE2_BUILD_JOBS}"; \
         cmake --install /tmp/ctranslate2/build; \
-        python3 -m pip install -r /tmp/ctranslate2/python/install_requirements.txt; \
+        uv pip install --python /usr/bin/python3 \
+            -r /tmp/ctranslate2/python/install_requirements.txt; \
         cd /tmp/ctranslate2/python; \
-        CTRANSLATE2_ROOT=/opt/ctranslate2 python3 setup.py bdist_wheel \
+        CTRANSLATE2_ROOT=/opt/ctranslate2 /usr/bin/python3 setup.py bdist_wheel \
             --dist-dir /tmp/ctranslate2-wheel; \
         cd /app; \
         rm -rf /opt/voxbox/ctranslate2 /opt/voxbox/ctranslate2-*.dist-info; \
-        python3 -m pip install --no-deps --force-reinstall \
+        uv pip install --python /usr/bin/python3 --no-deps --reinstall \
             /tmp/ctranslate2-wheel/*.whl; \
         PYTHONPATH=/opt/voxbox LD_LIBRARY_PATH=/opt/ctranslate2/lib:${LD_LIBRARY_PATH} \
-            python3 -c 'import ctranslate2; print(f"Installed CTranslate2 {ctranslate2.__version__} from {ctranslate2.__file__}"); assert "/usr/local/lib/python" in ctranslate2.__file__'; \
+            /usr/bin/python3 -c 'import ctranslate2; print(f"Installed CTranslate2 {ctranslate2.__version__} from {ctranslate2.__file__}"); assert "/usr/local/lib/python3.10/dist-packages/" in ctranslate2.__file__'; \
         rm -rf /tmp/ctranslate2 /tmp/ctranslate2-wheel; \
         ldconfig; \
     fi
@@ -200,14 +207,14 @@ ENV LD_LIBRARY_PATH=/opt/ctranslate2/lib:${LD_LIBRARY_PATH}
 # audio models can load.  Remove only torchvision in the Jetson mode while
 # preserving the NVIDIA torch and torchaudio packages.
 RUN if [ "${PRESERVE_BASE_TORCH}" = "1" ]; then \
-        python3 -m pip uninstall -y torchvision; \
+        uv pip uninstall --python /usr/bin/python3 torchvision; \
     fi
 
 # Cache LiveKit model downloads independently from normal application changes.
 # agent.py reads the phone book at import time, so both inputs are copied here.
 COPY local_voice_ai/agent.py ./local_voice_ai/agent.py
 COPY phonebook.csv ./phonebook.csv
-RUN python -m local_voice_ai.agent download-files || true
+RUN /usr/bin/python3 -m local_voice_ai.agent download-files || true
 
 # Copy application code only after all dependency and model-download layers.
 COPY local_voice_ai ./local_voice_ai
@@ -238,4 +245,4 @@ EXPOSE 7860 8080 7880 7881
 VOLUME ["/models"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python3", "-m", "local_voice_ai", "serve"]
+CMD ["/usr/bin/python3", "-m", "local_voice_ai", "serve"]
