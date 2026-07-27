@@ -1,13 +1,49 @@
+x-nvidia-runtime: &nvidia-runtime
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock:
+      soft: -1
+      hard: -1
+    stack:
+      soft: 67108864
+      hard: 67108864
+
 services:
   app:
-    # JetPack's CSV-mode NVIDIA hook requires selecting the NVIDIA runtime
-    # instead of Docker's generic `gpus: all` device request.
-    runtime: nvidia
+    <<: *nvidia-runtime
     environment:
-      DEVICE: ${DEVICE:-cuda}
-      NEMOTRON_DEVICE: ${NEMOTRON_DEVICE:-cpu}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+  livekit:
+    <<: *nvidia-runtime
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+  gradio:
+    <<: *nvidia-runtime
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+  stt:
+    <<: *nvidia-runtime
+    environment:
+      VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cuda}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+  tts:
+    <<: *nvidia-runtime
+    environment:
       BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cuda}
-      LLAMA_CTX_SIZE: ${GPU_LLAMA_CTX_SIZE:-16384}
-      LLAMA_N_GPU_LAYERS: ${GPU_LLAMA_N_GPU_LAYERS:-0}
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+  llm:
+    <<: *nvidia-runtime
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility

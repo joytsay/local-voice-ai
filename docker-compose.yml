@@ -1,92 +1,168 @@
 services:
   app:
-    container_name: local-voice-ai
     build:
       context: .
+      dockerfile: docker/app.Dockerfile
       args:
-        # CPU is the default. For GPU:
-          # LLAMA_MODEL_PATH=/models/llama.cpp/Qwen3-4B-Instruct-2507-UD-IQ1_S.gguf \
-          # LLAMA_MODEL=qwen3-4b \
-          # LLAMA_MODEL_ALIAS=qwen3-4b \
-          # STT_PROVIDER=whisper \
-          # STT_LANGUAGE=zh \
-          # VOXBOX_DEVICE=cuda \
-          # VOXBOX_MODEL_PATH=/models/voxbox/cache/huggingface/models--Systran--faster-whisper-small/snapshots/536b0662742c02347bc0e980a01041f333bce120 \
-          # BLUEMAGPIE_DEVICE=cuda \
-          # BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/78b3cbe95ed6f3097a07b5894444998c3f879075 \
-          # LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b7205 \
-          # PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
-          # TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
-          # For NVIDIA Jetson, use PYTHON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu
-          # with INSTALL_JETSON_INFERENCE=1 and PRESERVE_BASE_TORCH=1.
-          # GPU_LLAMA_N_GPU_LAYERS=3 \
-          # COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
-          # docker compose up --build
-        LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
-        LIVEKIT_IMAGE: ${LIVEKIT_IMAGE:-livekit/livekit-server:latest}
         PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
-        INSTALL_JETSON_INFERENCE: ${INSTALL_JETSON_INFERENCE:-0}
-        JETSON_INFERENCE_REPO: ${JETSON_INFERENCE_REPO:-https://github.com/dusty-nv/jetson-inference.git}
-        JETSON_INFERENCE_REF: ${JETSON_INFERENCE_REF:-master}
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
-        PRESERVE_BASE_TORCH: ${PRESERVE_BASE_TORCH:-0}
-    env_file:
-      - .env
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-slim}
+    restart: unless-stopped
     environment:
-      LIVEKIT_URL: ${LIVEKIT_URL:-ws://127.0.0.1:7880}
-      LIVEKIT_AGENT_URL: ${LIVEKIT_AGENT_URL:-ws://127.0.0.1:7880}
+      ECHO_MODE: ${ECHO_MODE:-0}
+      DEVICE: ${DEVICE:-cuda}
+      LIVEKIT_URL: ws://livekit:7880
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
-      LIVEKIT_NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
-      ECHO_MODE: ${ECHO_MODE:-0}
-      SERVICE_BIND_HOST: ${SERVICE_BIND_HOST:-127.0.0.1}
-      MANAGE_GRADIO: ${MANAGE_GRADIO:-1}
-      GRADIO_HOST: ${GRADIO_HOST:-0.0.0.0}
-      GRADIO_PORT: ${GRADIO_PORT:-7860}
-      VOICE_CLONE_DIR: ${VOICE_CLONE_DIR:-/models/voice_clones}
-      MANAGE_LLAMA: ${MANAGE_LLAMA:-0}
       STT_PROVIDER: ${STT_PROVIDER:-whisper}
-      STT_LANGUAGE: ${STT_LANGUAGE:-auto}
-      STT_PUBLIC_PORT: ${STT_PUBLIC_PORT:-8000}
-      VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cuda}
-      NEMOTRON_LANGUAGE: ${NEMOTRON_LANGUAGE:-zh-CN}
-      TTS_PROVIDER: ${TTS_PROVIDER:-bluemagpie}
-      TTS_VOICE: ${TTS_VOICE:-chinese_female}
-      TTS_PUBLIC_PORT: ${TTS_PUBLIC_PORT:-8800}
-      BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cuda}
-      BLUEMAGPIE_MODEL_NAME: ${BLUEMAGPIE_MODEL_NAME:-OpenFormosa/BlueMagpie-TTS}
-      BLUEMAGPIE_FORCE_VOICE: ${BLUEMAGPIE_FORCE_VOICE:-}
-      BLUEMAGPIE_CFG_VALUE: ${BLUEMAGPIE_CFG_VALUE:-2.8}
-      BLUEMAGPIE_INFERENCE_TIMESTEPS: ${BLUEMAGPIE_INFERENCE_TIMESTEPS:-9}
-      BLUEMAGPIE_SEED: ${BLUEMAGPIE_SEED:-1729}
-      LLAMA_HF_REPO: ${LLAMA_HF_REPO:-unsloth/Qwen3-4B-Instruct-2507-GGUF}
-      LLAMA_MODEL: ${LLAMA_MODEL:-qwen3-4b}
-      LLAMA_MODEL_ALIAS: ${LLAMA_MODEL_ALIAS:-qwen3-4b}
-      LLAMA_CTX_SIZE: ${LLAMA_CTX_SIZE:-16384}
-      LLAMA_N_GPU_LAYERS: ${LLAMA_N_GPU_LAYERS:-0}
-      DEVICE: ${DEVICE:-cuda}
-      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
-      VOXBOX_MODEL_PATH: ${VOXBOX_MODEL_PATH:-}
-    ports:
-      - "${WEB_PORT:-8080}:8080"
-      - "${GRADIO_PORT:-7860}:7860"
-      - "${STT_PUBLIC_PORT:-8000}:8000"
-      - "${TTS_PUBLIC_PORT:-8800}:8880"
-      - "${LIVEKIT_BIND_PORT:-7880}:7880"
-      - "${LIVEKIT_RTC_PORT:-7881}:7881"
-      # WebRTC media over UDP. The host port must equal the container port
-      # because LiveKit advertises this exact port in its ICE candidates.
-      - "${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+      STT_LANGUAGE: ${STT_LANGUAGE:-zh}
+      STT_BASE_URL: http://stt:8000/v1
+      TTS_BASE_URL: http://tts:8880/v1
+      LLM_BASE_URL: http://llm:8080/v1
+      MANAGE_LIVEKIT: "0"
+      MANAGE_STT: "0"
+      MANAGE_TTS: "0"
+      MANAGE_LLM: "0"
+      MANAGE_GRADIO: "0"
     volumes:
-      - ./local_voice_ai:/app/local_voice_ai:ro
-      - ./models:/models
-      - ./models/voxbox:/data
+      - type: volume
+        source: models
+        target: /models
+        volume:
+          nocopy: true
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      livekit:
+        condition: service_started
+
+  livekit:
+    build:
+      context: .
+      dockerfile: docker/livekit.Dockerfile
+      args:
+        LIVEKIT_IMAGE: ${LIVEKIT_IMAGE:-livekit/livekit-server:latest}
+    restart: unless-stopped
+    command:
+      - --dev
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "7880"
+      - --rtc.tcp_port
+      - "7881"
+      - --udp-port
+      - "7882"
+      - --node-ip
+      - ${LIVEKIT_NODE_IP:-127.0.0.1}
+    ports:
+      - "${LIVEKIT_PORT:-7880}:7880"
+      - "${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+
+  gradio:
+    build:
+      context: .
+      dockerfile: docker/gradio.Dockerfile
+      args:
+        PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+    restart: unless-stopped
+    environment:
+      STT_LANGUAGE: ${STT_LANGUAGE:-zh}
+      TTS_VOICE: ${TTS_VOICE:-hung_yi_lee}
+    volumes:
+      - type: volume
+        source: models
+        target: /models
+        volume:
+          nocopy: true
+    ports:
+      - "${GRADIO_PORT:-7860}:7860"
+
+  stt:
+    build:
+      context: .
+      dockerfile: docker/stt.Dockerfile
+      args:
+        PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+        INSTALL_JETSON_INFERENCE: ${INSTALL_JETSON_INFERENCE:-0}
+        CTRANSLATE2_VERSION: ${CTRANSLATE2_VERSION:-4.5.0}
+        CUDA_ARCH_LIST: ${CUDA_ARCH_LIST:-Auto}
+    restart: unless-stopped
+    environment:
+      STT_LANGUAGE: ${STT_LANGUAGE:-zh}
+      STT_BIND_PORT: "8000"
+      VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cpu}
+      VOXBOX_COMPUTE_TYPE: ${VOXBOX_COMPUTE_TYPE:-}
+      VOXBOX_MODEL_PATH: ${VOXBOX_MODEL_PATH:-}
+      VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - type: volume
+        source: models
+        target: /models
+        volume:
+          nocopy: true
+    ports:
+      - "${STT_PORT:-8000}:8000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz > /dev/null"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 30s
+
+  tts:
+    build:
+      context: .
+      dockerfile: docker/tts.Dockerfile
+      args:
+        PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+    restart: unless-stopped
+    environment:
+      BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cpu}
+      BLUEMAGPIE_MODEL_NAME: ${BLUEMAGPIE_MODEL_NAME:-OpenFormosa/BlueMagpie-TTS}
+      BLUEMAGPIE_DEFAULT_VOICE: ${TTS_VOICE:-hung_yi_lee}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - type: volume
+        source: models
+        target: /models
+        volume:
+          nocopy: true
+    ports:
+      - "${TTS_PORT:-8800}:8880"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8880/v1/models"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  llm:
+    build:
+      context: .
+      dockerfile: docker/llm.Dockerfile
+      args:
+        LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    profiles: ["llm"]
+    restart: unless-stopped
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --hf-repo
+      - ${LLM_HF_REPO:-bartowski/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M}
+      - --alias
+      - ${LLM_MODEL:-local-model}
+    volumes:
+      - type: volume
+        source: models
+        target: /models
+        volume:
+          nocopy: true
+    ports:
+      - "${LLM_PORT:-11434}:8080"
 
 volumes:
   models:

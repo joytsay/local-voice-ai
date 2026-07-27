@@ -1,5 +1,37 @@
+x-local-source: &local-source
+  volumes:
+    - ./local_voice_ai:/app/local_voice_ai
+
 services:
   app:
+    <<: *local-source
     volumes:
-      - ./local_voice_ai:/app/local_voice_ai:ro
+      - ./local_voice_ai:/app/local_voice_ai
       - ./phonebook.csv:/app/phonebook.csv:ro
+      - type: bind
+        source: ${MODELS_DIR:-./models}
+        target: /models
+
+  gradio:
+    <<: *local-source
+    volumes:
+      - ./local_voice_ai:/app/local_voice_ai
+      - type: bind
+        source: ${MODELS_DIR:-./models}
+        target: /models
+
+  stt:
+    <<: *local-source
+    volumes:
+      - ./local_voice_ai:/app/local_voice_ai
+      - type: bind
+        source: ${MODELS_DIR:-./models}
+        target: /models
+
+  tts:
+    <<: *local-source
+    volumes:
+      - ./local_voice_ai:/app/local_voice_ai
+      - type: bind
+        source: ${MODELS_DIR:-./models}
+        target: /models

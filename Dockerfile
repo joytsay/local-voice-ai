@@ -212,6 +212,23 @@ RUN if [ "${PRESERVE_BASE_TORCH}" = "1" ]; then \
 
 # Cache LiveKit model downloads independently from normal application changes.
 # agent.py reads the phone book at import time, so both inputs are copied here.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if ! /usr/bin/python3 -c 'import ctranslate2' >/dev/null 2>&1; then \
+        git clone --depth=1 --branch v4.5.0 \
+            https://github.com/OpenNMT/CTranslate2.git /tmp/ctranslate2-python \
+        && mkdir -p /usr/local/include \
+        && cp -a /tmp/ctranslate2-python/include/. /usr/local/include/ \
+        && uv pip install --system \
+            -r /tmp/ctranslate2-python/python/install_requirements.txt \
+        && cd /tmp/ctranslate2-python/python \
+        && CTRANSLATE2_ROOT=/usr/local /usr/bin/python3 setup.py bdist_wheel \
+        && uv pip install --system dist/*.whl \
+        && cd / \
+        && rm -rf /tmp/ctranslate2-python; \
+    fi \
+    && /usr/bin/python3 -c \
+        'import ctranslate2; print("CTranslate2 Python binding:", ctranslate2.__version__)'
+
 COPY local_voice_ai/agent.py ./local_voice_ai/agent.py
 COPY phonebook.csv ./phonebook.csv
 RUN /usr/bin/python3 -m local_voice_ai.agent download-files || true
@@ -246,3 +263,18 @@ VOLUME ["/models"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/bin/python3", "-m", "local_voice_ai", "serve"]
+
+# Thin final targets give each Compose service an independent image identity
+# and entrypoint while sharing all expensive Jetson/CUDA dependency layers.
+FROM runtime AS app
+CMD ["/usr/bin/python3", "-m", "local_voice_ai", "serve"]
+
+FROM runtime AS gradio
+CMD ["/usr/bin/python3", "-m", "local_voice_ai.run_stt_tts", "--host", "0.0.0.0", "--port", "7860"]
+
+FROM runtime AS stt
+ENV PYTHONPATH=/opt/voxbox
+CMD ["/usr/bin/python3", "-m", "local_voice_ai.services.whisper"]
+
+FROM runtime AS tts
+CMD ["/usr/bin/python3", "-m", "local_voice_ai.services.bluemagpie.server", "--host", "0.0.0.0", "--port", "8880"]
