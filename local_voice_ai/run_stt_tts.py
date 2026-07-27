@@ -30,19 +30,32 @@ STT_PUBLIC_PORT = int(os.getenv("STT_PUBLIC_PORT", "8000"))
 TTS_PUBLIC_PORT = int(os.getenv("TTS_PUBLIC_PORT", "8800"))
 DEFAULT_STT_BASE_URL = os.getenv("STT_BASE_URL", f"http://127.0.0.1:{STT_PUBLIC_PORT}/v1")
 DEFAULT_TTS_BASE_URL = os.getenv("TTS_BASE_URL", f"http://127.0.0.1:{TTS_PUBLIC_PORT}/v1")
-DEFAULT_STT_MODELS = [
-    "Systran/faster-whisper-small",
-    "nemotron-3.5-asr-streaming",
-]
+DEFAULT_STT_MODELS = list(
+    dict.fromkeys(
+        [
+            os.getenv("VOXBOX_HF_REPO", "Systran/faster-whisper-small"),
+            "Systran/faster-whisper-small",
+            "Systran/faster-whisper-large-v3",
+            "nemotron-3.5-asr-streaming",
+        ]
+    )
+)
 DEFAULT_TTS_MODELS = [
     "bluemagpie-tts",
-    "kokoro",
 ]
 DEFAULT_VOICES = [
     "hung_yi_lee",
     "female_voice",
 ]
 VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
+STT_MODEL_ROOTS = [
+    Path(value.strip())
+    for value in os.getenv(
+        "STT_MODEL_ROOTS",
+        "/models/whisper,/models/voxbox/cache/huggingface",
+    ).split(",")
+    if value.strip()
+]
 _MANIFEST_LOCK = threading.Lock()
 
 
@@ -75,6 +88,51 @@ def _csv_env(name: str, default: list[str]) -> list[str]:
         return default
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return values or default
+
+
+def _stt_model_id(model_file: Path, root: Path) -> str:
+    """Convert a Hugging Face cache directory into its repository ID."""
+    for parent in model_file.parents:
+        if parent == root.parent:
+            break
+        if parent.name.startswith("models--"):
+            encoded_id = parent.name.removeprefix("models--")
+            return "/".join(encoded_id.split("--"))
+    return str(model_file.parent)
+
+
+def _stt_model_options() -> list[str]:
+    """Discover complete faster-whisper models in the shared model mount."""
+    discovered: set[str] = set()
+    for root in STT_MODEL_ROOTS:
+        if not root.is_dir():
+            continue
+        try:
+            discovered.update(
+                _stt_model_id(model_file, root)
+                for model_file in root.rglob("model.bin")
+                if model_file.is_file()
+            )
+        except OSError:
+            continue
+
+    if discovered:
+        return sorted(discovered, key=str.casefold)
+    return _csv_env("STT_MODEL_OPTIONS", DEFAULT_STT_MODELS)
+
+
+def _refresh_stt_model_dropdown(selected_model: str) -> Any:
+    choices = _stt_model_options()
+    configured_model = os.getenv("VOXBOX_HF_REPO", "").strip()
+    value = next(
+        (
+            candidate
+            for candidate in (selected_model, configured_model, choices[0])
+            if candidate in choices
+        ),
+        choices[0],
+    )
+    return gr.Dropdown(choices=choices, value=value)
 
 
 def _load_clone_manifest() -> dict[str, Any]:
@@ -358,9 +416,13 @@ def clone_voice(
 
 
 def build_demo() -> gr.Blocks:
-    stt_models = _csv_env("STT_MODEL_OPTIONS", DEFAULT_STT_MODELS)
+    stt_models = _stt_model_options()
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
     voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
+    configured_stt_model = os.getenv("VOXBOX_HF_REPO", "").strip()
+    selected_stt_model = (
+        configured_stt_model if configured_stt_model in stt_models else stt_models[0]
+    )
 
     with gr.Blocks(title="GeoVision STT/TTS API") as demo:
         gr.Markdown("# GeoVision STT/TTS API")
@@ -395,6 +457,18 @@ def build_demo() -> gr.Blocks:
                     None,
                 ],
                 [
+                    "/app/local_voice_ai/amazingtalkerCut.mp3",
+                    None,
+                ],
+                [
+                    "/app/local_voice_ai/000002.flac",
+                    None,
+                ],
+                [
+                    "/app/local_voice_ai/000008.flac",
+                    None,
+                ],
+                [
                     None,
                     "您好，感謝您來電奇偶科技GeoVision，我是人工智能櫃台，請問需要幫你轉接嗎？",
                 ],
@@ -410,7 +484,7 @@ def build_demo() -> gr.Blocks:
             with gr.Row():
                 stt_model = gr.Dropdown(
                     choices=stt_models,
-                    value=stt_models[0],
+                    value=selected_stt_model,
                     allow_custom_value=True,
                     label="STT model",
                 )
@@ -529,6 +603,11 @@ def build_demo() -> gr.Blocks:
             _refresh_voice_dropdown,
             inputs=voice,
             outputs=voice,
+        )
+        demo.load(
+            _refresh_stt_model_dropdown,
+            inputs=stt_model,
+            outputs=stt_model,
         )
         demo.load(
             _endpoint_defaults_for_request,

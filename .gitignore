@@ -2,6 +2,8 @@ venv/
 inference/llama/models/
 
 # Python cache artifacts
+/models
 **/__pycache__/
 *.pyc
-/models
+*.flac
+*.mp3

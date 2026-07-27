@@ -68,6 +68,9 @@ services:
     restart: unless-stopped
     environment:
       STT_LANGUAGE: ${STT_LANGUAGE:-zh}
+      VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
+      STT_MODEL_OPTIONS: ${STT_MODEL_OPTIONS:-}
+      STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
       TTS_VOICE: ${TTS_VOICE:-hung_yi_lee}
     volumes:
       - type: volume
@@ -95,6 +98,7 @@ services:
       VOXBOX_COMPUTE_TYPE: ${VOXBOX_COMPUTE_TYPE:-}
       VOXBOX_MODEL_PATH: ${VOXBOX_MODEL_PATH:-}
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
+      VOXBOX_DOWNLOAD_ROOT: ${VOXBOX_DOWNLOAD_ROOT:-/models/whisper}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - type: volume
