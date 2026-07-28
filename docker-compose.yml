@@ -72,6 +72,8 @@ services:
       STT_MODEL_OPTIONS: ${STT_MODEL_OPTIONS:-}
       STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
       TTS_VOICE: ${TTS_VOICE:-hung_yi_lee}
+      GRADIO_BROWSER_STATE_KEY: ${GRADIO_BROWSER_STATE_KEY:-local-voice-ai-settings-v1}
+      GRADIO_BROWSER_STATE_SECRET: ${GRADIO_BROWSER_STATE_SECRET:-local-voice-ai-browser-state-v1}
     volumes:
       - type: volume
         source: models

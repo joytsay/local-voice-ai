@@ -121,20 +121,6 @@ def _stt_model_options() -> list[str]:
     return _csv_env("STT_MODEL_OPTIONS", DEFAULT_STT_MODELS)
 
 
-def _refresh_stt_model_dropdown(selected_model: str) -> Any:
-    choices = _stt_model_options()
-    configured_model = os.getenv("VOXBOX_HF_REPO", "").strip()
-    value = next(
-        (
-            candidate
-            for candidate in (selected_model, configured_model, choices[0])
-            if candidate in choices
-        ),
-        choices[0],
-    )
-    return gr.Dropdown(choices=choices, value=value)
-
-
 def _load_clone_manifest() -> dict[str, Any]:
     try:
         manifest = json.loads(
@@ -155,10 +141,89 @@ def _voice_options(defaults: list[str]) -> list[str]:
     return list(dict.fromkeys([*defaults, *clone_ids]))
 
 
-def _refresh_voice_dropdown(selected_voice: str) -> Any:
-    choices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
-    value = selected_voice if selected_voice in choices else choices[0]
-    return gr.Dropdown(choices=choices, value=value)
+def _save_browser_settings(
+    stt_base_url: str,
+    tts_base_url: str,
+    stt_model: str,
+    tts_model: str,
+    voice: str,
+    language: str,
+    response_format: str,
+    timeout_s: float,
+    cfg_value: float,
+    inference_timesteps: int,
+    seed: int,
+    min_len: int,
+    max_len: int,
+    retry_badcase: bool,
+    transcript: str,
+) -> dict[str, Any]:
+    return {
+        "stt_base_url": stt_base_url,
+        "tts_base_url": tts_base_url,
+        "stt_model": stt_model,
+        "tts_model": tts_model,
+        "voice": voice,
+        "language": language,
+        "response_format": response_format,
+        "timeout_s": timeout_s,
+        "cfg_value": cfg_value,
+        "inference_timesteps": inference_timesteps,
+        "seed": seed,
+        "min_len": min_len,
+        "max_len": max_len,
+        "retry_badcase": retry_badcase,
+        "transcript": transcript,
+    }
+
+
+def _restore_browser_settings(
+    saved: dict[str, Any] | None,
+    request: gr.Request,
+) -> tuple[Any, ...]:
+    settings = saved if isinstance(saved, dict) else {}
+    default_stt_url, default_tts_url = _endpoint_defaults_for_request(request)
+    stt_models = _stt_model_options()
+    tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
+    voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
+    configured_stt_model = os.getenv("VOXBOX_HF_REPO", "").strip()
+
+    saved_stt_model = str(settings.get("stt_model", ""))
+    stt_model = next(
+        (
+            candidate
+            for candidate in (saved_stt_model, configured_stt_model, stt_models[0])
+            if candidate in stt_models
+        ),
+        stt_models[0],
+    )
+    saved_voice = str(settings.get("voice", ""))
+    voice = saved_voice if saved_voice in voices else voices[0]
+    response_formats = ["wav", "mp3", "flac", "opus", "aac"]
+    response_format = str(settings.get("response_format", "wav"))
+    if response_format not in response_formats:
+        response_format = "wav"
+
+    return (
+        str(settings.get("stt_base_url") or default_stt_url),
+        str(settings.get("tts_base_url") or default_tts_url),
+        gr.Dropdown(choices=stt_models, value=stt_model),
+        str(settings.get("tts_model") or tts_models[0]),
+        gr.Dropdown(choices=voices, value=voice),
+        str(settings.get("language") or os.getenv("STT_LANGUAGE", "zh")),
+        response_format,
+        settings.get("timeout_s", 180),
+        settings.get("cfg_value", 2.8),
+        settings.get(
+            "inference_timesteps",
+            int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9")),
+        ),
+        settings.get("seed", int(os.getenv("BLUEMAGPIE_SEED", "1729"))),
+        settings.get("min_len", 2),
+        settings.get("max_len", 2000),
+        bool(settings.get("retry_badcase", False)),
+        str(settings.get("transcript") or ""),
+    )
 
 
 def _clone_id(name: str) -> str:
@@ -425,6 +490,17 @@ def build_demo() -> gr.Blocks:
     )
 
     with gr.Blocks(title="GeoVision STT/TTS API") as demo:
+        browser_settings = gr.BrowserState(
+            {},
+            storage_key=os.getenv(
+                "GRADIO_BROWSER_STATE_KEY",
+                "local-voice-ai-settings-v1",
+            ),
+            secret=os.getenv(
+                "GRADIO_BROWSER_STATE_SECRET",
+                "local-voice-ai-browser-state-v1",
+            ),
+        )
         gr.Markdown("# GeoVision STT/TTS API")
 
         with gr.Row():
@@ -599,19 +675,33 @@ def build_demo() -> gr.Blocks:
             ],
             outputs=[transcript, output_audio, voice, clone_download],
         )
+        setting_components = [
+            stt_base_url,
+            tts_base_url,
+            stt_model,
+            tts_model,
+            voice,
+            language,
+            response_format,
+            timeout_s,
+            cfg_value,
+            inference_timesteps,
+            seed,
+            min_len,
+            max_len,
+            retry_badcase,
+            transcript,
+        ]
         demo.load(
-            _refresh_voice_dropdown,
-            inputs=voice,
-            outputs=voice,
+            _restore_browser_settings,
+            inputs=browser_settings,
+            outputs=setting_components,
         )
-        demo.load(
-            _refresh_stt_model_dropdown,
-            inputs=stt_model,
-            outputs=stt_model,
-        )
-        demo.load(
-            _endpoint_defaults_for_request,
-            outputs=[stt_base_url, tts_base_url],
+        gr.on(
+            triggers=[component.change for component in setting_components],
+            fn=_save_browser_settings,
+            inputs=setting_components,
+            outputs=browser_settings,
         )
 
     return demo
