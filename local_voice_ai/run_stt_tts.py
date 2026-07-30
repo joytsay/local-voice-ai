@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import io
 import json
 import os
@@ -17,6 +18,7 @@ import re
 import tempfile
 import threading
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -57,6 +59,71 @@ STT_MODEL_ROOTS = [
     if value.strip()
 ]
 _MANIFEST_LOCK = threading.Lock()
+MIN_CLONE_REFERENCE_SECONDS = 3.0
+_LAST_USED_LOCK = threading.Lock()
+_LAST_USED_STATE: dict[str, str | None] = {
+    "ip": None,
+    "time": None,
+}
+_TAIPEI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Taipei")
+_APP_CSS = """
+#app-header {
+    align-items: center;
+    gap: 1rem;
+}
+#app-title h1 {
+    margin: 0;
+}
+#last-used {
+    min-height: 0;
+    padding: 0.25rem 0;
+    text-align: right;
+    color: var(--body-text-color-subdued);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+@media (max-width: 700px) {
+    #last-used {
+        text-align: left;
+        white-space: normal;
+    }
+}
+"""
+
+
+def _last_used_html() -> str:
+    with _LAST_USED_LOCK:
+        ip = _LAST_USED_STATE["ip"]
+        used_at = _LAST_USED_STATE["time"]
+
+    if ip is None or used_at is None:
+        return "<span>Last used: never</span>"
+    return (
+        f"<span>Last used by <strong>{html.escape(ip)}</strong>"
+        f" · {html.escape(used_at)}</span>"
+    )
+
+
+def _request_ip(request: gr.Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+
+    client = getattr(request, "client", None)
+    return str(getattr(client, "host", None) or "unknown")
+
+
+def _record_last_used(request: gr.Request) -> str:
+    with _LAST_USED_LOCK:
+        _LAST_USED_STATE["ip"] = _request_ip(request)
+        _LAST_USED_STATE["time"] = datetime.now(_TAIPEI_TIMEZONE).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    return _last_used_html()
 
 
 def _endpoint_defaults_for_request(request: gr.Request) -> tuple[str, str]:
@@ -213,10 +280,10 @@ def _restore_browser_settings(
         str(settings.get("language") or os.getenv("STT_LANGUAGE", "zh")),
         response_format,
         settings.get("timeout_s", 180),
-        settings.get("cfg_value", 2.8),
+        settings.get("cfg_value", 2.0),
         settings.get(
             "inference_timesteps",
-            int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9")),
+            int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10")),
         ),
         settings.get("seed", int(os.getenv("BLUEMAGPIE_SEED", "1729"))),
         settings.get("min_len", 2),
@@ -238,10 +305,15 @@ def _clone_id(name: str) -> str:
 
 def _save_clone_profile(name: str, audio: Any) -> tuple[str, str]:
     clone_id = _clone_id(name)
-    wav_bytes = _audio_to_wav_bytes(audio)
+    wav_bytes = _audio_to_wav_bytes(
+        audio,
+        min_duration_s=MIN_CLONE_REFERENCE_SECONDS,
+    )
     VOICE_CLONE_DIR.mkdir(parents=True, exist_ok=True)
     wav_name = f"{clone_id}.wav"
+    centroid_name = f"{clone_id}.pt"
     wav_path = VOICE_CLONE_DIR / wav_name
+    centroid_path = VOICE_CLONE_DIR / centroid_name
     archive_path = VOICE_CLONE_DIR / f"{clone_id}.zip"
 
     with _MANIFEST_LOCK:
@@ -253,13 +325,15 @@ def _save_clone_profile(name: str, audio: Any) -> tuple[str, str]:
             temporary_wav.write(wav_bytes)
             temporary_wav_path = Path(temporary_wav.name)
         os.replace(temporary_wav_path, wav_path)
+        centroid_path.unlink(missing_ok=True)
 
         profile = {
             "id": clone_id,
             "name": name.strip(),
             "reference_wav": wav_name,
+            "speaker_centroid": centroid_name,
             "provider": "bluemagpie",
-            "mode": "reference_audio",
+            "mode": "speaker_centroid",
         }
         manifest = _load_clone_manifest()
         manifest["voices"] = [
@@ -307,6 +381,11 @@ def delete_clone_voice(voice_id: str) -> tuple[Any, None]:
             for entry in matching_profiles
             if entry.get("reference_wav")
         )
+        files_to_delete.update(
+            str(entry.get("speaker_centroid", ""))
+            for entry in matching_profiles
+            if entry.get("speaker_centroid")
+        )
         clone_root = VOICE_CLONE_DIR.resolve()
         for relative_name in files_to_delete:
             target = (VOICE_CLONE_DIR / relative_name).resolve()
@@ -328,20 +407,38 @@ def delete_clone_voice(voice_id: str) -> tuple[Any, None]:
     return gr.Dropdown(choices=choices, value=choices[0]), None
 
 
-def _audio_to_wav_bytes(audio: Any) -> bytes:
+def _audio_to_wav_bytes(
+    audio: Any,
+    *,
+    min_duration_s: float = 0.0,
+) -> bytes:
     if audio is None:
         raise gr.Error("Record or upload audio first.")
 
     if isinstance(audio, str):
-        return Path(audio).read_bytes()
-
-    if isinstance(audio, tuple) and len(audio) == 2:
+        try:
+            data, sample_rate = sf.read(audio, always_2d=False)
+        except (OSError, RuntimeError) as exc:
+            raise gr.Error(f"Unable to decode the input audio: {exc}") from exc
+    elif isinstance(audio, tuple) and len(audio) == 2:
         sample_rate, data = audio
-        buf = io.BytesIO()
-        sf.write(buf, data, int(sample_rate), format="WAV", subtype="PCM_16")
-        return buf.getvalue()
+    else:
+        raise gr.Error(f"Unsupported audio input: {type(audio).__name__}")
 
-    raise gr.Error(f"Unsupported audio input: {type(audio).__name__}")
+    sample_rate = int(sample_rate)
+    if sample_rate <= 0:
+        raise gr.Error("The input audio has an invalid sample rate.")
+
+    duration_s = len(data) / sample_rate
+    if duration_s < min_duration_s:
+        raise gr.Error(
+            f"Voice cloning needs at least {min_duration_s:g} seconds of clean "
+            f"speech; this recording is {duration_s:.1f} seconds."
+        )
+
+    buf = io.BytesIO()
+    sf.write(buf, data, sample_rate, format="WAV", subtype="PCM_16")
+    return buf.getvalue()
 
 
 def _response_text(response: httpx.Response) -> str:
@@ -502,7 +599,7 @@ def clone_voice(
         transcript,
         tts_base_url,
         tts_model,
-        voice,
+        clone_id,
         response_format,
         cfg_value,
         inference_timesteps,
@@ -511,7 +608,6 @@ def clone_voice(
         retry_badcase,
         seed,
         timeout_s,
-        reference_audio=audio,
     )
     voice_choices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
     return (
@@ -531,7 +627,7 @@ def build_demo() -> gr.Blocks:
         configured_stt_model if configured_stt_model in stt_models else stt_models[0]
     )
 
-    with gr.Blocks(title="GeoVision STT/TTS API") as demo:
+    with gr.Blocks(title="GeoVision STT/TTS API", css=_APP_CSS) as demo:
         browser_settings = gr.BrowserState(
             {},
             storage_key=os.getenv(
@@ -543,7 +639,12 @@ def build_demo() -> gr.Blocks:
                 "local-voice-ai-browser-state-v1",
             ),
         )
-        gr.Markdown("# GeoVision STT/TTS API")
+        with gr.Row(equal_height=False, elem_id="app-header"):
+            with gr.Column(scale=3, min_width=300):
+                gr.Markdown("# GeoVision STT/TTS API", elem_id="app-title")
+            with gr.Column(scale=1, min_width=360):
+                last_used = gr.HTML(_last_used_html(), elem_id="last-used")
+        last_used_timer = gr.Timer(value=5.0, active=True)
 
         with gr.Row():
             with gr.Column():
@@ -634,14 +735,14 @@ def build_demo() -> gr.Blocks:
                 cfg_value = gr.Slider(
                     2.0,
                     2.8,
-                    value=2.8,
+                    value=2.0,
                     step=0.1,
                     label="CFG value",
                 )
                 inference_timesteps = gr.Slider(
                     1,
                     50,
-                    value=int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9")),
+                    value=int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10")),
                     step=1,
                     label="Inference timesteps",
                 )
@@ -726,6 +827,23 @@ def build_demo() -> gr.Blocks:
             inputs=voice,
             outputs=[voice, clone_download],
         )
+        for action_button in (
+            stt_button,
+            tts_button,
+            round_trip_button,
+            clone_voice_button,
+            delete_voice_button,
+        ):
+            action_button.click(
+                _record_last_used,
+                outputs=last_used,
+                queue=False,
+            )
+        last_used_timer.tick(
+            _last_used_html,
+            outputs=last_used,
+            queue=False,
+        )
         setting_components = [
             stt_base_url,
             tts_base_url,
@@ -747,6 +865,11 @@ def build_demo() -> gr.Blocks:
             _restore_browser_settings,
             inputs=browser_settings,
             outputs=setting_components,
+        )
+        demo.load(
+            _record_last_used,
+            outputs=last_used,
+            queue=False,
         )
         gr.on(
             triggers=[component.change for component in setting_components],
@@ -770,6 +893,7 @@ def main() -> None:
         server_port=args.port,
         share=args.share,
         theme=gr.themes.Glass(),
+        css=_APP_CSS,
         allowed_paths=[str(VOICE_CLONE_DIR)],
     )
 

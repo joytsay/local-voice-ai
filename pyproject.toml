@@ -35,7 +35,7 @@ ml = [
     "torch",
     "torchaudio",
     "nemo-toolkit[asr]",
-    "bluemagpie-tts @ git+https://github.com/OpenFormosa/BlueMagpie-TTS.git",
+    "bluemagpie-tts[clone] @ git+https://github.com/OpenFormosa/BlueMagpie-TTS.git",
     "kokoro>=0.9",
     "huggingface_hub>=0.34,<1.0",
 ]

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -64,7 +65,22 @@ def _install_sdpa_gqa_compat() -> None:
     )
 
 
+def _install_torch_distributed_compat() -> None:
+    """Supply the symbol SpeechBrain imports on non-distributed Jetson builds."""
+    distributed = getattr(torch, "distributed", None)
+    if distributed is None or hasattr(distributed, "ReduceOp"):
+        return
+
+    class ReduceOpCompat:
+        # SpeechBrain's ECAPA inference does not call its distributed-statistics
+        # path. The placeholder only lets that optional helper module import.
+        SUM = None
+
+    distributed.ReduceOp = ReduceOpCompat
+
+
 _install_sdpa_gqa_compat()
+_install_torch_distributed_compat()
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -76,10 +92,15 @@ logging.basicConfig(level=logging.INFO)
 MODEL_NAME = os.getenv("BLUEMAGPIE_MODEL_NAME", "OpenFormosa/BlueMagpie-TTS")
 MODEL_ID = os.getenv("BLUEMAGPIE_MODEL_ID", "bluemagpie-tts")
 DEFAULT_VOICE = os.getenv("BLUEMAGPIE_DEFAULT_VOICE", "chinese_female")
-DEFAULT_CFG_VALUE = float(os.getenv("BLUEMAGPIE_CFG_VALUE", "2.8"))
-DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "9"))
+DEFAULT_CFG_VALUE = float(os.getenv("BLUEMAGPIE_CFG_VALUE", "2.0"))
+DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10"))
 DEFAULT_SEED = int(os.getenv("BLUEMAGPIE_SEED", "1729"))
 FORCED_VOICE = os.getenv("BLUEMAGPIE_FORCE_VOICE", "").strip()
+CLONE_DEVICE = os.getenv("BLUEMAGPIE_CLONE_DEVICE", "cuda").strip() or "cuda"
+ECAPA_MODEL = os.getenv(
+    "BLUEMAGPIE_ECAPA_MODEL",
+    "speechbrain/spkrec-ecapa-voxceleb",
+)
 MAX_REFERENCE_AUDIO_BYTES = 25 * 1024 * 1024
 VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
 
@@ -87,6 +108,9 @@ _model = None
 _speaker_table: Optional[dict[str, object]] = None
 _hung_yi_lee_centroid: Optional[torch.Tensor] = None
 _model_dir: Optional[str] = None
+_speaker_encoder = None
+_SPEAKER_ENCODER_LOCK = threading.Lock()
+_CENTROID_LOCK = threading.Lock()
 
 
 def _complete_model_dir(path: str) -> bool:
@@ -292,23 +316,132 @@ def _speaker_centroid(voice: str):
     return centroids[speaker_ids.index(speaker_id)]
 
 
-def _clone_reference_path(voice: str) -> Optional[str]:
+def _clone_profile(voice: str) -> Optional[dict[str, object]]:
     manifest_path = VOICE_CLONE_DIR / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
-    clone_root = VOICE_CLONE_DIR.resolve()
     for entry in manifest.get("voices", []):
-        if entry.get("id") != voice:
-            continue
-        reference_path = (VOICE_CLONE_DIR / str(entry.get("reference_wav", ""))).resolve()
-        if clone_root not in reference_path.parents or not reference_path.is_file():
-            logger.warning("invalid reference path for cloned voice %s", voice)
-            return None
-        return str(reference_path)
+        if isinstance(entry, dict) and entry.get("id") == voice:
+            return entry
     return None
+
+
+def _clone_file(
+    profile: dict[str, object],
+    field: str,
+    *,
+    must_exist: bool,
+) -> Optional[Path]:
+    relative_name = str(profile.get(field, "")).strip()
+    if not relative_name:
+        return None
+
+    clone_root = VOICE_CLONE_DIR.resolve()
+    path = (VOICE_CLONE_DIR / relative_name).resolve()
+    if not path.is_relative_to(clone_root) or path == clone_root:
+        raise ValueError(f"cloned voice profile contains an unsafe {field} path")
+    if must_exist and not path.is_file():
+        raise ValueError(f"cloned voice {field} file is missing")
+    return path
+
+
+def _clone_device() -> str:
+    if CLONE_DEVICE.startswith("cuda") and not torch.cuda.is_available():
+        logger.warning(
+            "BLUEMAGPIE_CLONE_DEVICE=%s but CUDA is unavailable; using CPU",
+            CLONE_DEVICE,
+        )
+        return "cpu"
+    return CLONE_DEVICE
+
+
+def _get_speaker_encoder():
+    global _speaker_encoder
+
+    with _SPEAKER_ENCODER_LOCK:
+        if _speaker_encoder is None:
+            from speechbrain.inference.speaker import EncoderClassifier
+
+            device = _clone_device()
+            savedir = VOICE_CLONE_DIR / "ecapa"
+            savedir.mkdir(parents=True, exist_ok=True)
+            logger.info("loading speaker encoder %s on %s", ECAPA_MODEL, device)
+            _speaker_encoder = EncoderClassifier.from_hparams(
+                source=ECAPA_MODEL,
+                savedir=str(savedir),
+                run_opts={"device": device},
+            )
+    return _speaker_encoder
+
+
+def _extract_centroid(reference_path: Path) -> torch.Tensor:
+    from bluemagpie import extract_speaker_centroid
+
+    centroid = extract_speaker_centroid(
+        str(reference_path),
+        ecapa_model=ECAPA_MODEL,
+        device=_clone_device(),
+        encoder=_get_speaker_encoder(),
+    )
+    centroid = torch.as_tensor(centroid).detach().cpu().float().reshape(-1)
+    expected_dim = int(getattr(_model, "speaker_embed_dim", 192))
+    if centroid.numel() != expected_dim or not torch.isfinite(centroid).all():
+        raise ValueError(
+            f"invalid speaker centroid: expected {expected_dim} finite values, "
+            f"got {centroid.numel()}"
+        )
+    return centroid
+
+
+def _saved_clone_centroid(voice: str) -> Optional[torch.Tensor]:
+    profile = _clone_profile(voice)
+    if profile is None:
+        return None
+
+    reference_path = _clone_file(profile, "reference_wav", must_exist=True)
+    if reference_path is None:
+        raise ValueError("cloned voice profile has no reference audio")
+
+    centroid_path = _clone_file(profile, "speaker_centroid", must_exist=False)
+    if centroid_path is None:
+        centroid_path = (VOICE_CLONE_DIR / f"{voice}.pt").resolve()
+        if not centroid_path.is_relative_to(VOICE_CLONE_DIR.resolve()):
+            raise ValueError("cloned voice ID produces an unsafe centroid path")
+
+    with _CENTROID_LOCK:
+        if centroid_path.is_file():
+            centroid = torch.load(
+                centroid_path,
+                map_location="cpu",
+                weights_only=True,
+            )
+            centroid = torch.as_tensor(centroid).detach().cpu().float().reshape(-1)
+        else:
+            logger.info("extracting speaker centroid for saved clone id=%s", voice)
+            centroid = _extract_centroid(reference_path)
+            centroid_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=centroid_path.parent,
+                suffix=".pt.tmp",
+                delete=False,
+            ) as temporary_centroid:
+                temporary_centroid_path = Path(temporary_centroid.name)
+            try:
+                torch.save(centroid, temporary_centroid_path)
+                os.replace(temporary_centroid_path, centroid_path)
+            finally:
+                temporary_centroid_path.unlink(missing_ok=True)
+
+    expected_dim = int(getattr(_model, "speaker_embed_dim", 192))
+    if centroid.numel() != expected_dim or not torch.isfinite(centroid).all():
+        raise ValueError(
+            f"cached speaker centroid for {voice!r} is invalid; delete "
+            f"{centroid_path.name!r} and try cloning again"
+        )
+    return centroid
 
 
 def _decode_reference_audio(value: str) -> bytes:
@@ -357,14 +490,18 @@ def _synthesize(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as reference_file:
             reference_file.write(reference_bytes)
             reference_path = reference_file.name
-        kwargs["reference_wav_path"] = reference_path
-        logger.info("using reference audio for voice cloning bytes=%d", len(reference_bytes))
+        with _CENTROID_LOCK:
+            kwargs["speaker_centroid"] = _extract_centroid(Path(reference_path))
+        logger.info(
+            "using extracted speaker centroid for one-shot voice cloning bytes=%d",
+            len(reference_bytes),
+        )
     else:
         forced_voice = FORCED_VOICE or voice
-        clone_reference_path = _clone_reference_path(forced_voice)
-        if clone_reference_path:
-            kwargs["reference_wav_path"] = clone_reference_path
-            logger.info("using saved cloned voice id=%s", forced_voice)
+        clone_centroid = _saved_clone_centroid(forced_voice)
+        if clone_centroid is not None:
+            kwargs["speaker_centroid"] = clone_centroid
+            logger.info("using cached speaker centroid for clone id=%s", forced_voice)
         else:
             speaker_id = _speaker_id(forced_voice)
             centroid = _speaker_centroid(forced_voice)
@@ -433,7 +570,8 @@ async def speech(req: SpeechRequest) -> Response:
         req.max_len,
         req.retry_badcase,
         req.seed,
-        bool(req.reference_audio),
+        bool(req.reference_audio)
+        or _clone_profile(FORCED_VOICE or voice) is not None,
     )
     try:
         audio, sample_rate = _synthesize(

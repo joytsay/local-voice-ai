@@ -7,3 +7,5 @@ inference/llama/models/
 *.pyc
 *.flac
 *.mp3
+*.csv
+/AGENTS.md

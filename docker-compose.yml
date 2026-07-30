@@ -123,9 +123,12 @@ services:
       dockerfile: docker/tts.Dockerfile
       args:
         PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        PRESERVE_BASE_TORCH: ${PRESERVE_BASE_TORCH:-0}
     restart: unless-stopped
     environment:
-      BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cpu}
+      BLUEMAGPIE_DEVICE: ${BLUEMAGPIE_DEVICE:-cuda}
+      BLUEMAGPIE_CLONE_DEVICE: ${BLUEMAGPIE_CLONE_DEVICE:-cuda}
       BLUEMAGPIE_MODEL_NAME: ${BLUEMAGPIE_MODEL_NAME:-OpenFormosa/BlueMagpie-TTS}
       BLUEMAGPIE_DEFAULT_VOICE: ${TTS_VOICE:-hung_yi_lee}
       HF_TOKEN: ${HF_TOKEN:-}
