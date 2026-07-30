@@ -286,6 +286,48 @@ def _save_clone_profile(name: str, audio: Any) -> tuple[str, str]:
     return clone_id, str(archive_path)
 
 
+def delete_clone_voice(voice_id: str) -> tuple[Any, None]:
+    voice_id = (voice_id or "").strip()
+    if voice_id in DEFAULT_VOICES:
+        raise gr.Error(f"The built-in voice {voice_id!r} cannot be deleted.")
+    if not voice_id:
+        raise gr.Error("Select a cloned voice to delete.")
+
+    with _MANIFEST_LOCK:
+        manifest = _load_clone_manifest()
+        matching_profiles = [
+            entry for entry in manifest["voices"] if entry.get("id") == voice_id
+        ]
+        if not matching_profiles:
+            raise gr.Error(f"{voice_id!r} is not a cloned voice.")
+
+        files_to_delete = {f"{voice_id}.zip"}
+        files_to_delete.update(
+            str(entry.get("reference_wav", ""))
+            for entry in matching_profiles
+            if entry.get("reference_wav")
+        )
+        clone_root = VOICE_CLONE_DIR.resolve()
+        for relative_name in files_to_delete:
+            target = (VOICE_CLONE_DIR / relative_name).resolve()
+            if not target.is_relative_to(clone_root):
+                raise gr.Error("The cloned voice manifest contains an unsafe path.")
+            target.unlink(missing_ok=True)
+
+        manifest["voices"] = [
+            entry for entry in manifest["voices"] if entry.get("id") != voice_id
+        ]
+        manifest_tmp = VOICE_CLONE_DIR / "manifest.json.tmp"
+        manifest_tmp.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(manifest_tmp, VOICE_CLONE_DIR / "manifest.json")
+
+    choices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
+    return gr.Dropdown(choices=choices, value=choices[0]), None
+
+
 def _audio_to_wav_bytes(audio: Any) -> bytes:
     if audio is None:
         raise gr.Error("Record or upload audio first.")
@@ -576,6 +618,10 @@ def build_demo() -> gr.Blocks:
                     allow_custom_value=True,
                     label="Voice",
                 )
+                delete_voice_button = gr.Button(
+                    "Delete cloned voice",
+                    variant="stop",
+                )
             with gr.Row():
                 language = gr.Textbox(label="STT language", value=os.getenv("STT_LANGUAGE", "zh"))
                 response_format = gr.Dropdown(
@@ -674,6 +720,11 @@ def build_demo() -> gr.Blocks:
                 timeout_s,
             ],
             outputs=[transcript, output_audio, voice, clone_download],
+        )
+        delete_voice_button.click(
+            delete_clone_voice,
+            inputs=voice,
+            outputs=[voice, clone_download],
         )
         setting_components = [
             stt_base_url,
