@@ -289,6 +289,7 @@ class SpeechRequest(BaseModel):
     retry_badcase: bool = False
     seed: int = DEFAULT_SEED
     reference_audio: Optional[str] = None
+    clone_mode: str = "speaker_centroid"
 
 
 def _speaker_id(voice: str) -> str:
@@ -471,6 +472,7 @@ def _synthesize(
     retry_badcase: bool,
     seed: int,
     reference_audio: Optional[str],
+    clone_mode: str,
 ) -> tuple[np.ndarray, int]:
     if _model is None:
         raise RuntimeError("model not loaded")
@@ -483,6 +485,10 @@ def _synthesize(
         "max_len": max_len,
         "retry_badcase": retry_badcase,
     }
+    if clone_mode not in {"reference_wav_path", "speaker_centroid"}:
+        raise ValueError(
+            "clone_mode must be 'reference_wav_path' or 'speaker_centroid'"
+        )
 
     reference_path: Optional[str] = None
     if reference_audio:
@@ -490,29 +496,51 @@ def _synthesize(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as reference_file:
             reference_file.write(reference_bytes)
             reference_path = reference_file.name
-        with _CENTROID_LOCK:
-            kwargs["speaker_centroid"] = _extract_centroid(Path(reference_path))
-        logger.info(
-            "using extracted speaker centroid for one-shot voice cloning bytes=%d",
-            len(reference_bytes),
-        )
+        if clone_mode == "reference_wav_path":
+            kwargs["reference_wav_path"] = reference_path
+            logger.info(
+                "using reference WAV for one-shot voice cloning bytes=%d",
+                len(reference_bytes),
+            )
+        else:
+            with _CENTROID_LOCK:
+                kwargs["speaker_centroid"] = _extract_centroid(Path(reference_path))
+            logger.info(
+                "using extracted speaker centroid for one-shot voice cloning bytes=%d",
+                len(reference_bytes),
+            )
     else:
         forced_voice = FORCED_VOICE or voice
-        clone_centroid = _saved_clone_centroid(forced_voice)
-        if clone_centroid is not None:
-            kwargs["speaker_centroid"] = clone_centroid
-            logger.info("using cached speaker centroid for clone id=%s", forced_voice)
+        clone_profile = _clone_profile(forced_voice)
+        if clone_profile is not None and clone_mode == "reference_wav_path":
+            clone_reference = _clone_file(
+                clone_profile,
+                "reference_wav",
+                must_exist=True,
+            )
+            if clone_reference is None:
+                raise ValueError("cloned voice profile has no reference audio")
+            kwargs["reference_wav_path"] = str(clone_reference)
+            logger.info("using reference WAV for saved clone id=%s", forced_voice)
         else:
-            speaker_id = _speaker_id(forced_voice)
-            centroid = _speaker_centroid(forced_voice)
-            if centroid is not None:
-                kwargs["speaker_centroid"] = centroid
-                logger.info("using speaker centroid id=%s", speaker_id)
-            else:
-                logger.warning(
-                    "speaker centroid for %s not found; using model default speaker",
-                    speaker_id,
+            clone_centroid = _saved_clone_centroid(forced_voice)
+            if clone_centroid is not None:
+                kwargs["speaker_centroid"] = clone_centroid
+                logger.info(
+                    "using cached speaker centroid for clone id=%s",
+                    forced_voice,
                 )
+            else:
+                speaker_id = _speaker_id(forced_voice)
+                centroid = _speaker_centroid(forced_voice)
+                if centroid is not None:
+                    kwargs["speaker_centroid"] = centroid
+                    logger.info("using speaker centroid id=%s", speaker_id)
+                else:
+                    logger.warning(
+                        "speaker centroid for %s not found; using model default speaker",
+                        speaker_id,
+                    )
 
     try:
         with torch.no_grad():
@@ -560,7 +588,7 @@ async def speech(req: SpeechRequest) -> Response:
     requested_format = req.response_format or "mp3"
     logger.info(
         "tts request chars=%d voice=%s format=%s cfg=%.2f steps=%d min_len=%d "
-        "max_len=%d retry=%s seed=%d clone=%s",
+        "max_len=%d retry=%s seed=%d clone=%s clone_mode=%s",
         len(req.input),
         voice,
         requested_format,
@@ -572,6 +600,7 @@ async def speech(req: SpeechRequest) -> Response:
         req.seed,
         bool(req.reference_audio)
         or _clone_profile(FORCED_VOICE or voice) is not None,
+        req.clone_mode,
     )
     try:
         audio, sample_rate = _synthesize(
@@ -584,6 +613,7 @@ async def speech(req: SpeechRequest) -> Response:
             req.retry_badcase,
             req.seed,
             req.reference_audio,
+            req.clone_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

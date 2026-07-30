@@ -49,6 +49,11 @@ DEFAULT_VOICES = [
     "hung_yi_lee",
     "female_voice",
 ]
+CLONE_MODE_CHOICES = [
+    ("A — Reference WAV", "reference_wav_path"),
+    ("B — Speaker centroid", "speaker_centroid"),
+]
+DEFAULT_CLONE_MODE = "speaker_centroid"
 VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
 STT_MODEL_ROOTS = [
     Path(value.strip())
@@ -60,6 +65,8 @@ STT_MODEL_ROOTS = [
 ]
 _MANIFEST_LOCK = threading.Lock()
 MIN_CLONE_REFERENCE_SECONDS = 3.0
+CENTROID_WINDOW_SECONDS = 6.0
+MIN_CENTROID_CHUNK_SECONDS = 1.0
 _LAST_USED_LOCK = threading.Lock()
 _LAST_USED_STATE: dict[str, str | None] = {
     "ip": None,
@@ -214,6 +221,7 @@ def _save_browser_settings(
     stt_model: str,
     tts_model: str,
     voice: str,
+    clone_mode: str,
     language: str,
     response_format: str,
     timeout_s: float,
@@ -231,6 +239,7 @@ def _save_browser_settings(
         "stt_model": stt_model,
         "tts_model": tts_model,
         "voice": voice,
+        "clone_mode": clone_mode,
         "language": language,
         "response_format": response_format,
         "timeout_s": timeout_s,
@@ -266,6 +275,9 @@ def _restore_browser_settings(
     )
     saved_voice = str(settings.get("voice", ""))
     voice = saved_voice if saved_voice in voices else voices[0]
+    clone_mode = str(settings.get("clone_mode", DEFAULT_CLONE_MODE))
+    if clone_mode not in {value for _, value in CLONE_MODE_CHOICES}:
+        clone_mode = DEFAULT_CLONE_MODE
     response_formats = ["wav", "mp3", "flac", "opus", "aac"]
     response_format = str(settings.get("response_format", "wav"))
     if response_format not in response_formats:
@@ -277,6 +289,7 @@ def _restore_browser_settings(
         gr.Dropdown(choices=stt_models, value=stt_model),
         str(settings.get("tts_model") or tts_models[0]),
         gr.Dropdown(choices=voices, value=voice),
+        clone_mode,
         str(settings.get("language") or os.getenv("STT_LANGUAGE", "zh")),
         response_format,
         settings.get("timeout_s", 180),
@@ -303,8 +316,14 @@ def _clone_id(name: str) -> str:
     return clone_id
 
 
-def _save_clone_profile(name: str, audio: Any) -> tuple[str, str]:
+def _save_clone_profile(
+    name: str,
+    audio: Any,
+    clone_mode: str,
+) -> tuple[str, str]:
     clone_id = _clone_id(name)
+    if clone_mode not in {value for _, value in CLONE_MODE_CHOICES}:
+        raise gr.Error("Select a valid voice cloning mode.")
     wav_bytes = _audio_to_wav_bytes(
         audio,
         min_duration_s=MIN_CLONE_REFERENCE_SECONDS,
@@ -333,7 +352,7 @@ def _save_clone_profile(name: str, audio: Any) -> tuple[str, str]:
             "reference_wav": wav_name,
             "speaker_centroid": centroid_name,
             "provider": "bluemagpie",
-            "mode": "speaker_centroid",
+            "mode": clone_mode,
         }
         manifest = _load_clone_manifest()
         manifest["voices"] = [
@@ -484,11 +503,48 @@ def transcribe_audio(
     return text
 
 
+def transcribe_audio_chunks(
+    audio: Any,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    timeout_s: float,
+) -> str:
+    """Transcribe the same six-second windows used for centroid extraction."""
+    wav_bytes = _audio_to_wav_bytes(audio)
+    data, sample_rate = sf.read(
+        io.BytesIO(wav_bytes),
+        always_2d=False,
+    )
+    window_size = max(int(CENTROID_WINDOW_SECONDS * sample_rate), 1)
+    minimum_size = max(int(MIN_CENTROID_CHUNK_SECONDS * sample_rate), 1)
+    chunks = [
+        data[start : start + window_size]
+        for start in range(0, len(data), window_size)
+        if len(data[start : start + window_size]) >= minimum_size
+    ]
+    if not chunks and len(data):
+        chunks = [data]
+
+    transcripts = [
+        transcribe_audio(
+            (sample_rate, chunk),
+            stt_base_url,
+            stt_model,
+            language,
+            timeout_s,
+        )
+        for chunk in chunks
+    ]
+    return "\n".join(transcripts)
+
+
 def synthesize_text(
     text: str,
     tts_base_url: str,
     tts_model: str,
     voice: str,
+    clone_mode: str,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -508,6 +564,7 @@ def synthesize_text(
         "model": tts_model,
         "input": text,
         "voice": voice,
+        "clone_mode": clone_mode,
         "response_format": response_format,
         "cfg_value": cfg_value,
         "inference_timesteps": int(inference_timesteps),
@@ -544,6 +601,7 @@ def round_trip(
     tts_base_url: str,
     tts_model: str,
     voice: str,
+    clone_mode: str,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -561,6 +619,7 @@ def round_trip(
         tts_base_url,
         tts_model,
         voice,
+        clone_mode,
         response_format,
         cfg_value,
         inference_timesteps,
@@ -582,6 +641,7 @@ def clone_voice(
     tts_base_url: str,
     tts_model: str,
     voice: str,
+    clone_mode: str,
     response_format: str,
     cfg_value: float,
     inference_timesteps: int,
@@ -591,15 +651,35 @@ def clone_voice(
     seed: int,
     timeout_s: float,
 ) -> tuple[str, str, Any, str]:
-    transcript = transcribe_audio(audio, stt_base_url, stt_model, language, timeout_s)
+    if clone_mode == "speaker_centroid":
+        transcript = transcribe_audio_chunks(
+            audio,
+            stt_base_url,
+            stt_model,
+            language,
+            timeout_s,
+        )
+    else:
+        transcript = transcribe_audio(
+            audio,
+            stt_base_url,
+            stt_model,
+            language,
+            timeout_s,
+        )
     if not transcript:
         raise gr.Error("STT returned an empty transcript, so voice cloning was skipped.")
-    clone_id, archive_path = _save_clone_profile(clone_name, audio)
+    clone_id, archive_path = _save_clone_profile(
+        clone_name,
+        audio,
+        clone_mode,
+    )
     output_audio = synthesize_text(
-        transcript,
+        " ".join(line.strip() for line in transcript.splitlines() if line.strip()),
         tts_base_url,
         tts_model,
         clone_id,
+        clone_mode,
         response_format,
         cfg_value,
         inference_timesteps,
@@ -719,6 +799,11 @@ def build_demo() -> gr.Blocks:
                     allow_custom_value=True,
                     label="Voice",
                 )
+                clone_mode = gr.Radio(
+                    choices=CLONE_MODE_CHOICES,
+                    value=DEFAULT_CLONE_MODE,
+                    label="Voice cloning mode",
+                )
                 delete_voice_button = gr.Button(
                     "Delete cloned voice",
                     variant="stop",
@@ -768,6 +853,7 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
+                clone_mode,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -789,6 +875,7 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
+                clone_mode,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -811,6 +898,7 @@ def build_demo() -> gr.Blocks:
                 tts_base_url,
                 tts_model,
                 voice,
+                clone_mode,
                 response_format,
                 cfg_value,
                 inference_timesteps,
@@ -850,6 +938,7 @@ def build_demo() -> gr.Blocks:
             stt_model,
             tts_model,
             voice,
+            clone_mode,
             language,
             response_format,
             timeout_s,
