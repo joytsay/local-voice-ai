@@ -21,6 +21,7 @@ services:
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
+      - ./phonebook.csv:/app/phonebook.csv:ro
       - type: bind
         source: ${MODELS_DIR:-./models}
         target: /models
@@ -45,3 +46,7 @@ services:
 
   llm:
     container_name: ivr-llm
+    volumes:
+      - type: bind
+        source: ${MODELS_DIR:-./models}
+        target: /models

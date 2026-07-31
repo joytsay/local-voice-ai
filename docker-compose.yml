@@ -68,6 +68,11 @@ services:
     restart: unless-stopped
     environment:
       STT_LANGUAGE: ${STT_LANGUAGE:-zh}
+      LLM_MODEL_PATH: ${LLM_MODEL_PATH:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_HF_REPO: ${LLM_HF_REPO:-}
+      LLM_PUBLIC_PORT: ${LLM_PORT:-11434}
+      PHONE_BOOK_PATH: /app/phonebook.csv
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
       STT_MODEL_OPTIONS: ${STT_MODEL_OPTIONS:-}
       STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
@@ -151,20 +156,19 @@ services:
   llm:
     build:
       context: .
-      dockerfile: docker/llm.Dockerfile
+      dockerfile: ${LLM_DOCKERFILE:-docker/llm.Dockerfile}
       args:
         LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+        LLAMA_JETSON_BASE: ${LLAMA_JETSON_BASE:-nvcr.io/nvidia/pytorch:24.07-py3-igpu}
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-b7205}
+        LLAMA_CPP_CUDA_ARCHITECTURES: ${LLAMA_CPP_CUDA_ARCHITECTURES:-87}
     profiles: ["llm"]
     restart: unless-stopped
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-      - --hf-repo
-      - ${LLM_HF_REPO:-bartowski/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M}
-      - --alias
-      - ${LLM_MODEL:-local-model}
+    environment:
+      LLM_MODEL_PATH: ${LLM_MODEL_PATH:-}
+      LLM_HF_REPO: ${LLM_HF_REPO:-bartowski/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M}
+      LLM_MODEL: ${LLM_MODEL:-}
+      GPU_LLAMA_N_GPU_LAYERS: ${GPU_LLAMA_N_GPU_LAYERS:-}
     volumes:
       - type: volume
         source: models

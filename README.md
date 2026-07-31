@@ -56,6 +56,21 @@ PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 TORCH_INDEX_URL=https://downl
 ```
 
 #### AGX (JETSON)
+
+The published `server-cuda-b7205` image is amd64-only. Build llama.cpp
+natively for Jetson Orin (arm64, CUDA compute capability 8.7):
+
+```sh
+LLM_DOCKERFILE=docker/llm.jetson.Dockerfile \
+LLAMA_JETSON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu \
+LLAMA_CPP_REF=b7205 \
+LLAMA_CPP_CUDA_ARCHITECTURES=87 \
+LLM_MODEL_PATH=/models/llama.cpp/Qwen3-4B-Instruct-2507-UD-IQ1_S.gguf \
+GPU_LLAMA_N_GPU_LAYERS=99 \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose --profile llm up --build llm
+```
+
 ```sh
 VOXBOX_DEVICE=cuda \
 VOXBOX_MODEL_PATH= \

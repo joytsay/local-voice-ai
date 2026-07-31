@@ -29,11 +29,15 @@ import gradio as gr
 import httpx
 import soundfile as sf
 
+from local_voice_ai.llm_prompt import SYSTEM_INSTRUCTIONS_PREFIX
+
 
 STT_PUBLIC_PORT = int(os.getenv("STT_PUBLIC_PORT", "8000"))
 TTS_PUBLIC_PORT = int(os.getenv("TTS_PUBLIC_PORT", "8800"))
+LLM_PUBLIC_PORT = int(os.getenv("LLM_PUBLIC_PORT", "11434"))
 DEFAULT_STT_BASE_URL = os.getenv("STT_BASE_URL", f"http://127.0.0.1:{STT_PUBLIC_PORT}/v1")
 DEFAULT_TTS_BASE_URL = os.getenv("TTS_BASE_URL", f"http://127.0.0.1:{TTS_PUBLIC_PORT}/v1")
+DEFAULT_LLM_BASE_URL = os.getenv("LLM_BASE_URL", f"http://127.0.0.1:{LLM_PUBLIC_PORT}/v1")
 DEFAULT_STT_MODELS = list(
     dict.fromkeys(
         [
@@ -47,6 +51,23 @@ DEFAULT_STT_MODELS = list(
 DEFAULT_TTS_MODELS = [
     "bluemagpie-tts",
 ]
+
+
+def _default_llm_model() -> str:
+    model_path = os.getenv("LLM_MODEL_PATH", "").strip()
+    if model_path:
+        return Path(model_path).name
+    return (
+        os.getenv("LLM_MODEL")
+        or os.getenv("LLM_HF_REPO")
+        or "local-model"
+    )
+
+
+DEFAULT_LLM_MODELS = [
+    _default_llm_model(),
+]
+PHONE_BOOK_PATH = Path(os.getenv("PHONE_BOOK_PATH", "/app/phonebook.csv"))
 DEFAULT_VOICES = [
     "hung_yi_lee",
     "female_voice",
@@ -86,6 +107,11 @@ _APP_CSS = """
 #app-title h1 {
     margin: 0;
 }
+#app-status {
+    align-items: flex-start;
+    flex-wrap: nowrap;
+    gap: 1rem;
+}
 #last-used {
     width: 100%;
     min-height: 0;
@@ -97,10 +123,12 @@ _APP_CSS = """
     overflow-wrap: anywhere;
 }
 #input-audio-filename {
+    width: 100%;
     min-height: 0;
     padding: 0;
     color: var(--body-text-color-subdued);
     font-size: 0.85rem;
+    overflow-wrap: anywhere;
 }
 @media (max-width: 700px) {
     #last-used {
@@ -168,7 +196,7 @@ def _run_recorded_action(
         _record_last_used(action, request, perf_counter() - started_at)
 
 
-def _endpoint_defaults_for_request(request: gr.Request) -> tuple[str, str]:
+def _endpoint_defaults_for_request(request: gr.Request) -> tuple[str, str, str]:
     """Use the hostname that the browser used to reach Gradio."""
     headers = request.headers
     authority = (
@@ -188,7 +216,11 @@ def _endpoint_defaults_for_request(request: gr.Request) -> tuple[str, str]:
         "TTS_BASE_URL",
         f"{scheme}://{display_host}:{TTS_PUBLIC_PORT}/v1",
     )
-    return stt_url, tts_url
+    llm_url = os.getenv(
+        "LLM_BASE_URL",
+        f"{scheme}://{display_host}:{LLM_PUBLIC_PORT}/v1",
+    )
+    return stt_url, tts_url, llm_url
 
 
 def _csv_env(name: str, default: list[str]) -> list[str]:
@@ -197,6 +229,34 @@ def _csv_env(name: str, default: list[str]) -> list[str]:
         return default
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return values or default
+
+
+def _llm_model_choices(
+    llm_base_url: str,
+) -> list[tuple[str, str]]:
+    configured = _csv_env("LLM_MODEL_OPTIONS", DEFAULT_LLM_MODELS)
+    model_ids: list[str] = []
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            response = client.get(llm_base_url.rstrip("/") + "/models")
+            response.raise_for_status()
+        data = response.json().get("data", [])
+        model_ids = [
+            str(entry["id"]).strip()
+            for entry in data
+            if isinstance(entry, dict) and str(entry.get("id", "")).strip()
+        ]
+    except (httpx.HTTPError, TypeError, ValueError):
+        pass
+
+    model_ids = list(dict.fromkeys([*model_ids, *configured]))
+    return [
+        (
+            Path(model_id).name if model_id.startswith("/") else model_id,
+            model_id,
+        )
+        for model_id in model_ids
+    ]
 
 
 def _stt_model_id(model_file: Path, root: Path) -> str:
@@ -253,11 +313,15 @@ def _voice_options(defaults: list[str]) -> list[str]:
 def _save_browser_settings(
     stt_base_url: str,
     tts_base_url: str,
+    llm_base_url: str,
     stt_model: str,
     tts_model: str,
+    llm_model: str,
+    llm_preprompt: str,
     voice: str,
     clone_mode: str,
     language: str,
+    use_llm: bool,
     use_vad: bool,
     vad_threshold: float,
     vad_min_speech_ms: int,
@@ -276,11 +340,15 @@ def _save_browser_settings(
     return {
         "stt_base_url": stt_base_url,
         "tts_base_url": tts_base_url,
+        "llm_base_url": llm_base_url,
         "stt_model": stt_model,
         "tts_model": tts_model,
+        "llm_model": llm_model,
+        "llm_preprompt": llm_preprompt,
         "voice": voice,
         "clone_mode": clone_mode,
         "language": language,
+        "use_llm": use_llm,
         "use_vad": use_vad,
         "vad_threshold": vad_threshold,
         "vad_min_speech_ms": vad_min_speech_ms,
@@ -303,9 +371,16 @@ def _restore_browser_settings(
     request: gr.Request,
 ) -> tuple[Any, ...]:
     settings = saved if isinstance(saved, dict) else {}
-    default_stt_url, default_tts_url = _endpoint_defaults_for_request(request)
+    default_stt_url, default_tts_url, default_llm_url = (
+        _endpoint_defaults_for_request(request)
+    )
+    stt_base_url = str(settings.get("stt_base_url") or default_stt_url)
+    tts_base_url = str(settings.get("tts_base_url") or default_tts_url)
+    llm_base_url = str(settings.get("llm_base_url") or default_llm_url)
     stt_models = _stt_model_options()
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
+    llm_model_choices = _llm_model_choices(llm_base_url)
+    llm_model_values = [value for _, value in llm_model_choices]
     voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
     configured_stt_model = os.getenv("VOXBOX_HF_REPO", "").strip()
 
@@ -320,6 +395,26 @@ def _restore_browser_settings(
     )
     saved_voice = str(settings.get("voice", ""))
     voice = saved_voice if saved_voice in voices else voices[0]
+    saved_llm_model = str(settings.get("llm_model", ""))
+    if not saved_llm_model or saved_llm_model == "local-model":
+        llm_model = llm_model_values[0]
+    elif saved_llm_model in llm_model_values:
+        llm_model = saved_llm_model
+    else:
+        saved_basename = Path(saved_llm_model).name
+        llm_model = next(
+            (
+                value
+                for label, value in llm_model_choices
+                if label == saved_basename
+            ),
+            saved_llm_model,
+        )
+    llm_preprompt = (
+        _with_system_instructions(str(settings["llm_preprompt"]))
+        if "llm_preprompt" in settings
+        else _phone_book_prompt()
+    )
     clone_mode = str(settings.get("clone_mode", DEFAULT_CLONE_MODE))
     if clone_mode not in {value for _, value in CLONE_MODE_CHOICES}:
         clone_mode = DEFAULT_CLONE_MODE
@@ -329,13 +424,21 @@ def _restore_browser_settings(
         response_format = "wav"
 
     return (
-        str(settings.get("stt_base_url") or default_stt_url),
-        str(settings.get("tts_base_url") or default_tts_url),
+        stt_base_url,
+        tts_base_url,
+        llm_base_url,
         gr.Dropdown(choices=stt_models, value=stt_model),
         str(settings.get("tts_model") or tts_models[0]),
+        gr.Dropdown(choices=llm_model_choices, value=llm_model),
+        llm_preprompt,
         gr.Dropdown(choices=voices, value=voice),
         clone_mode,
         str(settings.get("language") or os.getenv("STT_LANGUAGE", "zh")),
+        (
+            bool(settings["use_llm"])
+            if "use_llm" in settings
+            else not bool(settings.get("bypass_llm", False))
+        ),
         bool(settings.get("use_vad", True)),
         settings.get("vad_threshold", 0.5),
         settings.get("vad_min_speech_ms", 250),
@@ -567,6 +670,69 @@ def _response_text(response: httpx.Response) -> str:
     return response.text.strip()
 
 
+def _with_system_instructions(prompt: str) -> str:
+    prompt = (prompt or "").strip()
+    prefix = SYSTEM_INSTRUCTIONS_PREFIX.strip()
+    if prompt.startswith(prefix):
+        return prompt
+    return f"{prefix}\n{prompt}" if prompt else prefix
+
+
+def _phone_book_prompt() -> str:
+    try:
+        prompt = PHONE_BOOK_PATH.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise gr.Error(f"Unable to read {PHONE_BOOK_PATH}: {exc}") from exc
+    if not prompt:
+        raise gr.Error(f"{PHONE_BOOK_PATH} is empty.")
+    return _with_system_instructions(prompt)
+
+
+def generate_llm_response(
+    text: str,
+    llm_preprompt: str,
+    llm_base_url: str,
+    llm_model: str,
+    timeout_s: float,
+) -> str:
+    text = (text or "").strip()
+    if not text:
+        raise gr.Error("Transcript is empty.")
+
+    url = llm_base_url.rstrip("/") + "/chat/completions"
+    messages = []
+    llm_preprompt = _with_system_instructions(llm_preprompt)
+    messages.append({"role": "system", "content": llm_preprompt})
+    messages.append({"role": "user", "content": text})
+    payload = {
+        "model": llm_model,
+        "messages": messages,
+        "temperature": 0.2,
+    }
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            response = client.post(url, json=payload)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise gr.Error(f"LLM failed: {exc.response.text}") from exc
+    except httpx.HTTPError as exc:
+        raise gr.Error(f"LLM request failed: {exc}") from exc
+
+    try:
+        content = response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise gr.Error("LLM returned an invalid chat-completions response.") from exc
+    result = re.sub(
+        r"<think>.*?</think>",
+        "",
+        str(content),
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    if not result:
+        raise gr.Error("LLM returned an empty response.")
+    return result
+
+
 def transcribe_audio(
     audio: Any,
     stt_base_url: str,
@@ -722,6 +888,10 @@ def round_trip(
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
     vad_speech_pad_ms: int,
+    use_llm: bool,
+    llm_base_url: str,
+    llm_model: str,
+    llm_preprompt: str,
     tts_base_url: str,
     tts_model: str,
     voice: str,
@@ -734,7 +904,7 @@ def round_trip(
     retry_badcase: bool,
     seed: int,
     timeout_s: float,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     transcript = transcribe_audio(
         audio,
         stt_base_url,
@@ -749,8 +919,19 @@ def round_trip(
     )
     if not transcript:
         raise gr.Error("STT returned an empty transcript, so TTS was skipped.")
+    llm_response = ""
+    spoken_text = transcript
+    if use_llm:
+        llm_response = generate_llm_response(
+            transcript,
+            llm_preprompt,
+            llm_base_url,
+            llm_model,
+            timeout_s,
+        )
+        spoken_text = llm_response
     output_audio = synthesize_text(
-        transcript,
+        spoken_text,
         tts_base_url,
         tts_model,
         voice,
@@ -764,7 +945,7 @@ def round_trip(
         seed,
         timeout_s,
     )
-    return transcript, output_audio
+    return transcript, llm_response, output_audio
 
 
 def clone_voice(
@@ -924,6 +1105,10 @@ def round_trip_request(
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
     vad_speech_pad_ms: int,
+    use_llm: bool,
+    llm_base_url: str,
+    llm_model: str,
+    llm_preprompt: str,
     tts_base_url: str,
     tts_model: str,
     voice: str,
@@ -937,9 +1122,9 @@ def round_trip_request(
     seed: int,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     return _run_recorded_action(
-        "STT + TTS",
+        "STT + LLM + TTS" if use_llm else "STT + TTS",
         request,
         round_trip,
         audio,
@@ -951,6 +1136,10 @@ def round_trip_request(
         vad_min_speech_ms,
         vad_min_silence_ms,
         vad_speech_pad_ms,
+        use_llm,
+        llm_base_url,
+        llm_model,
+        llm_preprompt,
         tts_base_url,
         tts_model,
         voice,
@@ -962,6 +1151,26 @@ def round_trip_request(
         max_len,
         retry_badcase,
         seed,
+        timeout_s,
+    )
+
+
+def generate_llm_response_request(
+    text: str,
+    llm_preprompt: str,
+    llm_base_url: str,
+    llm_model: str,
+    timeout_s: float,
+    request: gr.Request,
+) -> str:
+    return _run_recorded_action(
+        "LLM",
+        request,
+        generate_llm_response,
+        text,
+        llm_preprompt,
+        llm_base_url,
+        llm_model,
         timeout_s,
     )
 
@@ -1035,13 +1244,14 @@ def delete_clone_voice_request(
 def build_demo() -> gr.Blocks:
     stt_models = _stt_model_options()
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
+    llm_models = _csv_env("LLM_MODEL_OPTIONS", DEFAULT_LLM_MODELS)
     voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
     configured_stt_model = os.getenv("VOXBOX_HF_REPO", "").strip()
     selected_stt_model = (
         configured_stt_model if configured_stt_model in stt_models else stt_models[0]
     )
 
-    with gr.Blocks(title="GeoVision STT/TTS API", css=_APP_CSS) as demo:
+    with gr.Blocks(title="GeoVision STT/LLM/TTS API", css=_APP_CSS) as demo:
         browser_settings = gr.BrowserState(
             {},
             storage_key=os.getenv(
@@ -1054,38 +1264,60 @@ def build_demo() -> gr.Blocks:
             ),
         )
         with gr.Row(equal_height=False, elem_id="app-header"):
-            with gr.Column(scale=3, min_width=300):
-                gr.Markdown("# GeoVision STT/TTS API", elem_id="app-title")
-            with gr.Column(scale=2, min_width=360):
+            gr.Markdown("# GeoVision STT/LLM/TTS API", elem_id="app-title")
+        with gr.Row(equal_height=False, elem_id="app-status"):
+            with gr.Column(scale=2, min_width=0):
+                input_audio_filename = gr.HTML(
+                    _input_audio_filename_html(None),
+                    elem_id="input-audio-filename",
+                )
+            with gr.Column(scale=3, min_width=0):
                 last_used = gr.HTML(_last_used_html(), elem_id="last-used")
         last_used_timer = gr.Timer(value=5.0, active=True)
 
         with gr.Row():
             with gr.Column():
-                input_audio_filename = gr.HTML(
-                    _input_audio_filename_html(None),
-                    elem_id="input-audio-filename",
-                )
                 audio = gr.Audio(
                     sources=["microphone", "upload"],
                     type="filepath",
                     label="Input audio",
                 )
-                with gr.Row():
-                    stt_button = gr.Button("Transcribe", variant="secondary")
-                    round_trip_button = gr.Button("Transcribe + Speak", variant="primary")
+                stt_button = gr.Button("STT transcribe", variant="secondary")
+                round_trip_button = gr.Button("STT transcribe + (LLM) + TTS speak", variant="primary")
                 clone_name = gr.Textbox(label="Clone voice name")
                 clone_voice_button = gr.Button("Clone voice", variant="secondary")
                 clone_download = gr.DownloadButton("Download cloned voice")
 
             with gr.Column():
-                transcript = gr.Textbox(label="Transcript", lines=5)
+                transcript = gr.Textbox(label="TTS transcript", lines=5)
+                tts_button = gr.Button(
+                    "TTS speak transcript",
+                    variant="secondary",
+                )
+                llm_generate_button = gr.Button(
+                    "TTS transcript to LLM",
+                    variant="secondary",
+                )
+                with gr.Accordion("LLM pre-prompt", open=False):
+                    llm_preprompt = gr.Textbox(
+                        label="System instructions and phonebook",
+                        value=_phone_book_prompt(),
+                        lines=12,
+                    )
+                llm_response = gr.Textbox(
+                    label="LLM response",
+                    lines=5,
+                    interactive=False,
+                )
+                llm_tts_button = gr.Button(
+                    "TTS speak LLM response",
+                    variant="secondary",
+                )
                 output_audio = gr.Audio(
                     label="TTS output",
                     type="filepath",
                     autoplay=True,
                 )
-                tts_button = gr.Button("Speak transcript", variant="secondary")
 
         gr.Examples(
             examples=[
@@ -1109,6 +1341,10 @@ def build_demo() -> gr.Blocks:
                     None,
                     "您好，感謝您來電奇偶科技GeoVision，我是人工智能櫃台，請問需要幫你轉接嗎？",
                 ],
+                [
+                    None,
+                    "幫我轉接軟體一 Louis",
+                ],
             ],
             inputs=[audio, transcript],
             label="Example",
@@ -1118,6 +1354,7 @@ def build_demo() -> gr.Blocks:
             with gr.Row():
                 stt_base_url = gr.Textbox(label="STT base URL", value=DEFAULT_STT_BASE_URL)
                 tts_base_url = gr.Textbox(label="TTS base URL", value=DEFAULT_TTS_BASE_URL)
+                llm_base_url = gr.Textbox(label="LLM base URL", value=DEFAULT_LLM_BASE_URL)
             with gr.Row():
                 stt_model = gr.Dropdown(
                     choices=stt_models,
@@ -1130,6 +1367,12 @@ def build_demo() -> gr.Blocks:
                     value=tts_models[0],
                     allow_custom_value=True,
                     label="TTS model",
+                )
+                llm_model = gr.Dropdown(
+                    choices=llm_models,
+                    value=llm_models[0],
+                    allow_custom_value=True,
+                    label="LLM model",
                 )
                 voice = gr.Dropdown(
                     choices=voices,
@@ -1148,6 +1391,7 @@ def build_demo() -> gr.Blocks:
                 )
             with gr.Row():
                 language = gr.Textbox(label="STT language", value=os.getenv("STT_LANGUAGE", "zh"))
+                use_llm = gr.Checkbox(value=True, label="Use LLM")
                 use_vad = gr.Checkbox(value=True, label="Use VAD")
                 response_format = gr.Dropdown(
                     choices=["wav", "mp3", "flac", "opus", "aac"],
@@ -1251,18 +1495,21 @@ def build_demo() -> gr.Blocks:
             ],
             outputs=output_audio,
         )
-        round_trip_button.click(
-            round_trip_request,
+        llm_generate_button.click(
+            generate_llm_response_request,
             inputs=[
-                audio,
-                stt_base_url,
-                stt_model,
-                language,
-                use_vad,
-                vad_threshold,
-                vad_min_speech_ms,
-                vad_min_silence_ms,
-                vad_speech_pad_ms,
+                transcript,
+                llm_preprompt,
+                llm_base_url,
+                llm_model,
+                timeout_s,
+            ],
+            outputs=llm_response,
+        )
+        llm_tts_button.click(
+            synthesize_text_request,
+            inputs=[
+                llm_response,
                 tts_base_url,
                 tts_model,
                 voice,
@@ -1276,7 +1523,38 @@ def build_demo() -> gr.Blocks:
                 seed,
                 timeout_s,
             ],
-            outputs=[transcript, output_audio],
+            outputs=output_audio,
+        )
+        round_trip_button.click(
+            round_trip_request,
+            inputs=[
+                audio,
+                stt_base_url,
+                stt_model,
+                language,
+                use_vad,
+                vad_threshold,
+                vad_min_speech_ms,
+                vad_min_silence_ms,
+                vad_speech_pad_ms,
+                use_llm,
+                llm_base_url,
+                llm_model,
+                llm_preprompt,
+                tts_base_url,
+                tts_model,
+                voice,
+                clone_mode,
+                response_format,
+                cfg_value,
+                inference_timesteps,
+                min_len,
+                max_len,
+                retry_badcase,
+                seed,
+                timeout_s,
+            ],
+            outputs=[transcript, llm_response, output_audio],
         )
         clone_voice_button.click(
             clone_voice_request,
@@ -1319,11 +1597,15 @@ def build_demo() -> gr.Blocks:
         setting_components = [
             stt_base_url,
             tts_base_url,
+            llm_base_url,
             stt_model,
             tts_model,
+            llm_model,
+            llm_preprompt,
             voice,
             clone_mode,
             language,
+            use_llm,
             use_vad,
             vad_threshold,
             vad_min_speech_ms,

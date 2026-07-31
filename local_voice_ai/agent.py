@@ -26,6 +26,8 @@ from livekit.agents import (
 from livekit.plugins import openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from local_voice_ai.llm_prompt import SYSTEM_INSTRUCTIONS_PREFIX
+
 logger = logging.getLogger("agent")
 
 if livekit_agent_url := os.getenv("LIVEKIT_AGENT_URL"):
@@ -51,14 +53,6 @@ def _load_phone_book() -> str:
 
 
 PHONE_BOOK = _load_phone_book()
-
-SYSTEM_INSTRUCTIONS_PREFIX = """第一句一定要先說：
-您好，感謝您來電奇偶科技，我是人工智能櫃台，請問需要幫你轉接嗎？
-之後的回覆要簡短、直接、清楚，一定要用繁體中文或英文回答,不要出現簡體中文,以下是範例回覆不要顯示出來,以及{}也不要顯示出來。
-如果是找特定人員，請詢問姓名。 請查詢分機表後回答： 範例：幫您轉接{部門} {中文姓名}, {英文姓名}, 分機{分機號碼} 轉接中請稍後。 
-如果有多個姓名的結果 請重新詢問完整姓名 或者部門 再去查表
-以下是公司內部的分機表 欄位依序是 部門 中文姓名 英文姓名 分機號碼：
-"""
 
 SYSTEM_INSTRUCTIONS = SYSTEM_INSTRUCTIONS_PREFIX + PHONE_BOOK
 
