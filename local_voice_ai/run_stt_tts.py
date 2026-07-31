@@ -258,6 +258,11 @@ def _save_browser_settings(
     voice: str,
     clone_mode: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     response_format: str,
     timeout_s: float,
     cfg_value: float,
@@ -276,6 +281,11 @@ def _save_browser_settings(
         "voice": voice,
         "clone_mode": clone_mode,
         "language": language,
+        "use_vad": use_vad,
+        "vad_threshold": vad_threshold,
+        "vad_min_speech_ms": vad_min_speech_ms,
+        "vad_min_silence_ms": vad_min_silence_ms,
+        "vad_speech_pad_ms": vad_speech_pad_ms,
         "response_format": response_format,
         "timeout_s": timeout_s,
         "cfg_value": cfg_value,
@@ -326,6 +336,11 @@ def _restore_browser_settings(
         gr.Dropdown(choices=voices, value=voice),
         clone_mode,
         str(settings.get("language") or os.getenv("STT_LANGUAGE", "zh")),
+        bool(settings.get("use_vad", True)),
+        settings.get("vad_threshold", 0.5),
+        settings.get("vad_min_speech_ms", 250),
+        settings.get("vad_min_silence_ms", 2000),
+        settings.get("vad_speech_pad_ms", 400),
         response_format,
         settings.get("timeout_s", 180),
         settings.get("cfg_value", 2.0),
@@ -557,6 +572,11 @@ def transcribe_audio(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     timeout_s: float,
 ) -> str:
     wav_bytes = _audio_to_wav_bytes(audio)
@@ -564,6 +584,11 @@ def transcribe_audio(
     data = {
         "model": stt_model,
         "response_format": "json",
+        "vad_filter": str(bool(use_vad)).lower(),
+        "vad_threshold": float(vad_threshold),
+        "vad_min_speech_ms": int(vad_min_speech_ms),
+        "vad_min_silence_ms": int(vad_min_silence_ms),
+        "vad_speech_pad_ms": int(vad_speech_pad_ms),
     }
     if language:
         data["language"] = language
@@ -592,6 +617,11 @@ def transcribe_audio_chunks(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     timeout_s: float,
 ) -> str:
     """Transcribe short non-overlapping windows for clone preview text."""
@@ -616,6 +646,11 @@ def transcribe_audio_chunks(
             stt_base_url,
             stt_model,
             language,
+            use_vad,
+            vad_threshold,
+            vad_min_speech_ms,
+            vad_min_silence_ms,
+            vad_speech_pad_ms,
             timeout_s,
         )
         for chunk in chunks
@@ -682,6 +717,11 @@ def round_trip(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     tts_base_url: str,
     tts_model: str,
     voice: str,
@@ -695,7 +735,18 @@ def round_trip(
     seed: int,
     timeout_s: float,
 ) -> tuple[str, str]:
-    transcript = transcribe_audio(audio, stt_base_url, stt_model, language, timeout_s)
+    transcript = transcribe_audio(
+        audio,
+        stt_base_url,
+        stt_model,
+        language,
+        use_vad,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_min_silence_ms,
+        vad_speech_pad_ms,
+        timeout_s,
+    )
     if not transcript:
         raise gr.Error("STT returned an empty transcript, so TTS was skipped.")
     output_audio = synthesize_text(
@@ -722,6 +773,11 @@ def clone_voice(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     tts_base_url: str,
     tts_model: str,
     voice: str,
@@ -741,6 +797,11 @@ def clone_voice(
             stt_base_url,
             stt_model,
             language,
+            use_vad,
+            vad_threshold,
+            vad_min_speech_ms,
+            vad_min_silence_ms,
+            vad_speech_pad_ms,
             timeout_s,
         )
     else:
@@ -749,6 +810,11 @@ def clone_voice(
             stt_base_url,
             stt_model,
             language,
+            use_vad,
+            vad_threshold,
+            vad_min_speech_ms,
+            vad_min_silence_ms,
+            vad_speech_pad_ms,
             timeout_s,
         )
     if not transcript:
@@ -787,6 +853,11 @@ def transcribe_audio_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     timeout_s: float,
     request: gr.Request,
 ) -> str:
@@ -798,6 +869,11 @@ def transcribe_audio_request(
         stt_base_url,
         stt_model,
         language,
+        use_vad,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_min_silence_ms,
+        vad_speech_pad_ms,
         timeout_s,
     )
 
@@ -843,6 +919,11 @@ def round_trip_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     tts_base_url: str,
     tts_model: str,
     voice: str,
@@ -865,6 +946,11 @@ def round_trip_request(
         stt_base_url,
         stt_model,
         language,
+        use_vad,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_min_silence_ms,
+        vad_speech_pad_ms,
         tts_base_url,
         tts_model,
         voice,
@@ -886,6 +972,11 @@ def clone_voice_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
     tts_base_url: str,
     tts_model: str,
     voice: str,
@@ -909,6 +1000,11 @@ def clone_voice_request(
         stt_base_url,
         stt_model,
         language,
+        use_vad,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_min_silence_ms,
+        vad_speech_pad_ms,
         tts_base_url,
         tts_model,
         voice,
@@ -1052,12 +1148,43 @@ def build_demo() -> gr.Blocks:
                 )
             with gr.Row():
                 language = gr.Textbox(label="STT language", value=os.getenv("STT_LANGUAGE", "zh"))
+                use_vad = gr.Checkbox(value=True, label="Use VAD")
                 response_format = gr.Dropdown(
                     choices=["wav", "mp3", "flac", "opus", "aac"],
                     value="wav",
                     label="TTS format",
                 )
                 timeout_s = gr.Slider(10, 600, value=180, step=10, label="Timeout seconds")
+            with gr.Accordion("VAD sensitivity", open=False):
+                with gr.Row():
+                    vad_threshold = gr.Slider(
+                        0.05,
+                        0.95,
+                        value=0.5,
+                        step=0.05,
+                        label="Speech threshold",
+                    )
+                    vad_min_speech_ms = gr.Slider(
+                        0,
+                        2000,
+                        value=250,
+                        step=50,
+                        label="Minimum speech (ms)",
+                    )
+                    vad_min_silence_ms = gr.Slider(
+                        100,
+                        5000,
+                        value=2000,
+                        step=100,
+                        label="Minimum silence (ms)",
+                    )
+                    vad_speech_pad_ms = gr.Slider(
+                        0,
+                        2000,
+                        value=400,
+                        step=50,
+                        label="Speech padding (ms)",
+                    )
             with gr.Row():
                 cfg_value = gr.Slider(
                     2.0,
@@ -1091,7 +1218,18 @@ def build_demo() -> gr.Blocks:
         )
         stt_button.click(
             transcribe_audio_request,
-            inputs=[audio, stt_base_url, stt_model, language, timeout_s],
+            inputs=[
+                audio,
+                stt_base_url,
+                stt_model,
+                language,
+                use_vad,
+                vad_threshold,
+                vad_min_speech_ms,
+                vad_min_silence_ms,
+                vad_speech_pad_ms,
+                timeout_s,
+            ],
             outputs=transcript,
         )
         tts_button.click(
@@ -1120,6 +1258,11 @@ def build_demo() -> gr.Blocks:
                 stt_base_url,
                 stt_model,
                 language,
+                use_vad,
+                vad_threshold,
+                vad_min_speech_ms,
+                vad_min_silence_ms,
+                vad_speech_pad_ms,
                 tts_base_url,
                 tts_model,
                 voice,
@@ -1143,6 +1286,11 @@ def build_demo() -> gr.Blocks:
                 stt_base_url,
                 stt_model,
                 language,
+                use_vad,
+                vad_threshold,
+                vad_min_speech_ms,
+                vad_min_silence_ms,
+                vad_speech_pad_ms,
                 tts_base_url,
                 tts_model,
                 voice,
@@ -1176,6 +1324,11 @@ def build_demo() -> gr.Blocks:
             voice,
             clone_mode,
             language,
+            use_vad,
+            vad_threshold,
+            vad_min_speech_ms,
+            vad_min_silence_ms,
+            vad_speech_pad_ms,
             response_format,
             timeout_s,
             cfg_value,

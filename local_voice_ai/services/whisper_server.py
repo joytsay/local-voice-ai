@@ -205,6 +205,11 @@ async def transcribe(
     response_format: str = Form(default="json"),
     prompt: str | None = Form(default=None),
     temperature: float = Form(default=0.0),
+    vad_filter: bool = Form(default=True),
+    vad_threshold: float = Form(default=0.5),
+    vad_min_speech_ms: int = Form(default=250),
+    vad_min_silence_ms: int = Form(default=2000),
+    vad_speech_pad_ms: int = Form(default=400),
 ) -> Response:
     suffix = Path(file.filename or "audio.wav").suffix or ".wav"
     temporary_path = ""
@@ -220,7 +225,13 @@ async def transcribe(
                 language=language or os.getenv("STT_LANGUAGE") or None,
                 initial_prompt=prompt,
                 temperature=temperature,
-                vad_filter=True,
+                vad_filter=vad_filter,
+                vad_parameters={
+                    "threshold": vad_threshold,
+                    "min_speech_duration_ms": vad_min_speech_ms,
+                    "min_silence_duration_ms": vad_min_silence_ms,
+                    "speech_pad_ms": vad_speech_pad_ms,
+                },
             )
             segments = list(segments_iter)
         text = "".join(segment.text for segment in segments).strip()
