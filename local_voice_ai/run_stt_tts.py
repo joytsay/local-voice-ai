@@ -95,6 +95,12 @@ _APP_CSS = """
     white-space: normal;
     overflow-wrap: anywhere;
 }
+#input-audio-filename {
+    min-height: 0;
+    padding: 0;
+    color: var(--body-text-color-subdued);
+    font-size: 0.85rem;
+}
 @media (max-width: 700px) {
     #last-used {
         text-align: right;
@@ -487,6 +493,19 @@ def _audio_to_wav_bytes(
     buf = io.BytesIO()
     sf.write(buf, data, sample_rate, format="WAV", subtype="PCM_16")
     return buf.getvalue()
+
+
+def _input_audio_filename_html(audio: Any) -> str:
+    if not audio:
+        return "<span>Opened file: <strong>none</strong></span>"
+    if isinstance(audio, str):
+        filename = Path(audio).name
+    else:
+        filename = "microphone recording"
+    return (
+        "<span>Opened file: "
+        f"<strong>{html.escape(filename)}</strong></span>"
+    )
 
 
 def _response_text(response: httpx.Response) -> str:
@@ -911,9 +930,13 @@ def build_demo() -> gr.Blocks:
 
         with gr.Row():
             with gr.Column():
+                input_audio_filename = gr.HTML(
+                    _input_audio_filename_html(None),
+                    elem_id="input-audio-filename",
+                )
                 audio = gr.Audio(
                     sources=["microphone", "upload"],
-                    type="numpy",
+                    type="filepath",
                     label="Input audio",
                 )
                 with gr.Row():
@@ -1024,6 +1047,12 @@ def build_demo() -> gr.Blocks:
                 max_len = gr.Slider(100, 4000, value=2000, step=100, label="Maximum length")
                 retry_badcase = gr.Checkbox(value=False, label="Retry abnormal output")
 
+        audio.change(
+            _input_audio_filename_html,
+            inputs=audio,
+            outputs=input_audio_filename,
+            queue=False,
+        )
         stt_button.click(
             transcribe_audio_request,
             inputs=[audio, stt_base_url, stt_model, language, timeout_s],
