@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import gc
+import logging
 import os
 import tempfile
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -9,7 +12,12 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+logger = logging.getLogger("whisper")
+logging.basicConfig(level=logging.INFO)
+
 _model: Any = None
+_loaded_model_name: str | None = None
+_MODEL_LOCK = threading.Lock()
 
 
 def _resolve_local_model(path: Path) -> Path | None:
@@ -44,48 +52,106 @@ def _resolve_local_model(path: Path) -> Path | None:
     )
 
 
-def _model_name() -> str:
+def _configured_model_path() -> str | None:
     configured_path = os.getenv("VOXBOX_MODEL_PATH", "").strip()
-    if configured_path:
-        path = Path(configured_path).expanduser()
-        candidates = [path]
-        if not path.is_absolute():
-            candidates.extend((Path("/") / path, Path("/app") / path))
+    if not configured_path:
+        return None
 
-        for candidate in candidates:
-            resolved = _resolve_local_model(candidate)
-            if resolved is not None:
-                return str(resolved)
+    path = Path(configured_path).expanduser()
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.extend((Path("/") / path, Path("/app") / path))
 
-        checked = ", ".join(str(candidate) for candidate in candidates)
-        raise FileNotFoundError(
-            "VOXBOX_MODEL_PATH does not contain a complete faster-whisper "
-            f"snapshot; checked: {checked}. A complete model directory must "
-            "contain model.bin. The local model directory is mounted at /models."
-        )
-    return os.getenv("VOXBOX_HF_REPO", "Systran/faster-whisper-small")
+    for candidate in candidates:
+        resolved = _resolve_local_model(candidate)
+        if resolved is not None:
+            return str(resolved)
+
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(
+        "VOXBOX_MODEL_PATH does not contain a complete faster-whisper "
+        f"snapshot; checked: {checked}. A complete model directory must "
+        "contain model.bin. The local model directory is mounted at /models."
+    )
 
 
-def _load_model() -> None:
-    global _model
+def _model_roots() -> list[Path]:
+    configured = os.getenv(
+        "STT_MODEL_ROOTS",
+        "/models/whisper,/models/voxbox/cache/huggingface",
+    )
+    roots = [Path(value.strip()) for value in configured.split(",") if value.strip()]
+    download_root = os.getenv("VOXBOX_DOWNLOAD_ROOT", "").strip()
+    if download_root:
+        roots.append(Path(download_root))
+    return list(dict.fromkeys(roots))
+
+
+def _cached_model(model_id: str) -> str | None:
+    if "/" not in model_id:
+        return None
+    cache_name = "models--" + "--".join(model_id.split("/"))
+    for root in _model_roots():
+        resolved = _resolve_local_model(root / cache_name)
+        if resolved is not None:
+            return str(resolved)
+    return None
+
+
+def _model_name(requested_model: str | None = None) -> str:
+    requested_model = (requested_model or "").strip()
+    default_model = os.getenv(
+        "VOXBOX_HF_REPO",
+        "Systran/faster-whisper-small",
+    )
+    if requested_model:
+        cached = _cached_model(requested_model)
+        if cached is not None:
+            return cached
+        if requested_model == default_model:
+            configured = _configured_model_path()
+            if configured is not None:
+                return configured
+        return requested_model
+
+    configured = _configured_model_path()
+    return configured if configured is not None else default_model
+
+
+def _load_model(requested_model: str | None = None) -> Any:
+    global _model, _loaded_model_name
 
     from faster_whisper import WhisperModel
+
+    model_name = _model_name(requested_model)
+    if _model is not None and _loaded_model_name == model_name:
+        return _model
 
     device = os.getenv("VOXBOX_DEVICE", "cpu")
     compute_type = os.getenv("VOXBOX_COMPUTE_TYPE", "").strip() or (
         "float16" if device.startswith("cuda") else "int8"
     )
+    if _model is not None:
+        logger.info("unloading Whisper model %s", _loaded_model_name)
+        _model = None
+        _loaded_model_name = None
+        gc.collect()
+
+    logger.info("loading Whisper model %s on %s", model_name, device)
     _model = WhisperModel(
-        _model_name(),
+        model_name,
         device=device,
         compute_type=compute_type,
         download_root=os.getenv("VOXBOX_DOWNLOAD_ROOT") or None,
     )
+    _loaded_model_name = model_name
+    return _model
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    _load_model()
+    with _MODEL_LOCK:
+        _load_model()
     yield
 
 
@@ -99,7 +165,7 @@ def health() -> dict[str, str]:
 
 @app.get("/v1/models")
 def models() -> dict[str, Any]:
-    name = _model_name()
+    name = _loaded_model_name or _model_name()
     return {
         "object": "list",
         "data": [{"id": name, "object": "model", "owned_by": "local"}],
@@ -140,10 +206,6 @@ async def transcribe(
     prompt: str | None = Form(default=None),
     temperature: float = Form(default=0.0),
 ) -> Response:
-    del model
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Whisper model is not ready")
-
     suffix = Path(file.filename or "audio.wav").suffix or ".wav"
     temporary_path = ""
     try:
@@ -151,14 +213,16 @@ async def transcribe(
             temporary.write(await file.read())
             temporary_path = temporary.name
 
-        segments_iter, info = _model.transcribe(
-            temporary_path,
-            language=language or os.getenv("STT_LANGUAGE") or None,
-            initial_prompt=prompt,
-            temperature=temperature,
-            vad_filter=True,
-        )
-        segments = list(segments_iter)
+        with _MODEL_LOCK:
+            active_model = _load_model(model)
+            segments_iter, info = active_model.transcribe(
+                temporary_path,
+                language=language or os.getenv("STT_LANGUAGE") or None,
+                initial_prompt=prompt,
+                temperature=temperature,
+                vad_filter=True,
+            )
+            segments = list(segments_iter)
         text = "".join(segment.text for segment in segments).strip()
 
         if response_format == "text":

@@ -101,6 +101,7 @@ services:
       VOXBOX_MODEL_PATH: ${VOXBOX_MODEL_PATH:-}
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
       VOXBOX_DOWNLOAD_ROOT: ${VOXBOX_DOWNLOAD_ROOT:-/models/whisper}
+      STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - type: volume
