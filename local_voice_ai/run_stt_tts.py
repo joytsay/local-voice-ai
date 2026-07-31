@@ -20,6 +20,7 @@ import threading
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -70,7 +71,9 @@ MIN_CENTROID_CHUNK_SECONDS = 1.0
 _LAST_USED_LOCK = threading.Lock()
 _LAST_USED_STATE: dict[str, str | None] = {
     "ip": None,
+    "action": None,
     "time": None,
+    "duration": None,
 }
 _TAIPEI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Taipei")
 _APP_CSS = """
@@ -82,17 +85,18 @@ _APP_CSS = """
     margin: 0;
 }
 #last-used {
+    width: 100%;
     min-height: 0;
     padding: 0.25rem 0;
     text-align: right;
     color: var(--body-text-color-subdued);
     font-size: 0.85rem;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 @media (max-width: 700px) {
     #last-used {
-        text-align: left;
-        white-space: normal;
+        text-align: right;
     }
 }
 """
@@ -101,12 +105,16 @@ _APP_CSS = """
 def _last_used_html() -> str:
     with _LAST_USED_LOCK:
         ip = _LAST_USED_STATE["ip"]
+        action = _LAST_USED_STATE["action"]
         used_at = _LAST_USED_STATE["time"]
+        duration = _LAST_USED_STATE["duration"]
 
-    if ip is None or used_at is None:
+    if ip is None or action is None or used_at is None or duration is None:
         return "<span>Last used: never</span>"
     return (
-        f"<span>Last used by <strong>{html.escape(ip)}</strong>"
+        f"<span>Last used by <strong>{html.escape(ip)}"
+        f" · {html.escape(action)}"
+        f" · {html.escape(duration)}</strong>"
         f" · {html.escape(used_at)}</span>"
     )
 
@@ -124,13 +132,32 @@ def _request_ip(request: gr.Request) -> str:
     return str(getattr(client, "host", None) or "unknown")
 
 
-def _record_last_used(request: gr.Request) -> str:
+def _record_last_used(
+    action: str,
+    request: gr.Request,
+    duration_s: float,
+) -> str:
     with _LAST_USED_LOCK:
         _LAST_USED_STATE["ip"] = _request_ip(request)
+        _LAST_USED_STATE["action"] = action
         _LAST_USED_STATE["time"] = datetime.now(_TAIPEI_TIMEZONE).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
+        _LAST_USED_STATE["duration"] = f"used {duration_s:.1f} sec"
     return _last_used_html()
+
+
+def _run_recorded_action(
+    action: str,
+    request: gr.Request,
+    function: Any,
+    *args: Any,
+) -> Any:
+    started_at = perf_counter()
+    try:
+        return function(*args)
+    finally:
+        _record_last_used(action, request, perf_counter() - started_at)
 
 
 def _endpoint_defaults_for_request(request: gr.Request) -> tuple[str, str]:
@@ -698,6 +725,160 @@ def clone_voice(
     )
 
 
+def transcribe_audio_request(
+    audio: Any,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    timeout_s: float,
+    request: gr.Request,
+) -> str:
+    return _run_recorded_action(
+        "STT",
+        request,
+        transcribe_audio,
+        audio,
+        stt_base_url,
+        stt_model,
+        language,
+        timeout_s,
+    )
+
+
+def synthesize_text_request(
+    text: str,
+    tts_base_url: str,
+    tts_model: str,
+    voice: str,
+    clone_mode: str,
+    response_format: str,
+    cfg_value: float,
+    inference_timesteps: int,
+    min_len: int,
+    max_len: int,
+    retry_badcase: bool,
+    seed: int,
+    timeout_s: float,
+    request: gr.Request,
+) -> str:
+    return _run_recorded_action(
+        "TTS",
+        request,
+        synthesize_text,
+        text,
+        tts_base_url,
+        tts_model,
+        voice,
+        clone_mode,
+        response_format,
+        cfg_value,
+        inference_timesteps,
+        min_len,
+        max_len,
+        retry_badcase,
+        seed,
+        timeout_s,
+    )
+
+
+def round_trip_request(
+    audio: Any,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    tts_base_url: str,
+    tts_model: str,
+    voice: str,
+    clone_mode: str,
+    response_format: str,
+    cfg_value: float,
+    inference_timesteps: int,
+    min_len: int,
+    max_len: int,
+    retry_badcase: bool,
+    seed: int,
+    timeout_s: float,
+    request: gr.Request,
+) -> tuple[str, str]:
+    return _run_recorded_action(
+        "STT + TTS",
+        request,
+        round_trip,
+        audio,
+        stt_base_url,
+        stt_model,
+        language,
+        tts_base_url,
+        tts_model,
+        voice,
+        clone_mode,
+        response_format,
+        cfg_value,
+        inference_timesteps,
+        min_len,
+        max_len,
+        retry_badcase,
+        seed,
+        timeout_s,
+    )
+
+
+def clone_voice_request(
+    audio: Any,
+    clone_name: str,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    tts_base_url: str,
+    tts_model: str,
+    voice: str,
+    clone_mode: str,
+    response_format: str,
+    cfg_value: float,
+    inference_timesteps: int,
+    min_len: int,
+    max_len: int,
+    retry_badcase: bool,
+    seed: int,
+    timeout_s: float,
+    request: gr.Request,
+) -> tuple[str, str, Any, str]:
+    return _run_recorded_action(
+        "Clone voice",
+        request,
+        clone_voice,
+        audio,
+        clone_name,
+        stt_base_url,
+        stt_model,
+        language,
+        tts_base_url,
+        tts_model,
+        voice,
+        clone_mode,
+        response_format,
+        cfg_value,
+        inference_timesteps,
+        min_len,
+        max_len,
+        retry_badcase,
+        seed,
+        timeout_s,
+    )
+
+
+def delete_clone_voice_request(
+    voice_id: str,
+    request: gr.Request,
+) -> tuple[Any, None]:
+    return _run_recorded_action(
+        "Delete voice",
+        request,
+        delete_clone_voice,
+        voice_id,
+    )
+
+
 def build_demo() -> gr.Blocks:
     stt_models = _stt_model_options()
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
@@ -722,7 +903,7 @@ def build_demo() -> gr.Blocks:
         with gr.Row(equal_height=False, elem_id="app-header"):
             with gr.Column(scale=3, min_width=300):
                 gr.Markdown("# GeoVision STT/TTS API", elem_id="app-title")
-            with gr.Column(scale=1, min_width=360):
+            with gr.Column(scale=2, min_width=360):
                 last_used = gr.HTML(_last_used_html(), elem_id="last-used")
         last_used_timer = gr.Timer(value=5.0, active=True)
 
@@ -842,12 +1023,12 @@ def build_demo() -> gr.Blocks:
                 retry_badcase = gr.Checkbox(value=False, label="Retry abnormal output")
 
         stt_button.click(
-            transcribe_audio,
+            transcribe_audio_request,
             inputs=[audio, stt_base_url, stt_model, language, timeout_s],
             outputs=transcript,
         )
         tts_button.click(
-            synthesize_text,
+            synthesize_text_request,
             inputs=[
                 transcript,
                 tts_base_url,
@@ -866,7 +1047,7 @@ def build_demo() -> gr.Blocks:
             outputs=output_audio,
         )
         round_trip_button.click(
-            round_trip,
+            round_trip_request,
             inputs=[
                 audio,
                 stt_base_url,
@@ -888,7 +1069,7 @@ def build_demo() -> gr.Blocks:
             outputs=[transcript, output_audio],
         )
         clone_voice_button.click(
-            clone_voice,
+            clone_voice_request,
             inputs=[
                 audio,
                 clone_name,
@@ -911,22 +1092,10 @@ def build_demo() -> gr.Blocks:
             outputs=[transcript, output_audio, voice, clone_download],
         )
         delete_voice_button.click(
-            delete_clone_voice,
+            delete_clone_voice_request,
             inputs=voice,
             outputs=[voice, clone_download],
         )
-        for action_button in (
-            stt_button,
-            tts_button,
-            round_trip_button,
-            clone_voice_button,
-            delete_voice_button,
-        ):
-            action_button.click(
-                _record_last_used,
-                outputs=last_used,
-                queue=False,
-            )
         last_used_timer.tick(
             _last_used_html,
             outputs=last_used,
@@ -954,11 +1123,6 @@ def build_demo() -> gr.Blocks:
             _restore_browser_settings,
             inputs=browser_settings,
             outputs=setting_components,
-        )
-        demo.load(
-            _record_last_used,
-            outputs=last_used,
-            queue=False,
         )
         gr.on(
             triggers=[component.change for component in setting_components],
