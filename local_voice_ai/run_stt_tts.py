@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
 import threading
 import zipfile
@@ -472,8 +473,43 @@ def _audio_to_wav_bytes(
     if isinstance(audio, str):
         try:
             data, sample_rate = sf.read(audio, always_2d=False)
-        except (OSError, RuntimeError) as exc:
-            raise gr.Error(f"Unable to decode the input audio: {exc}") from exc
+        except (OSError, RuntimeError) as soundfile_error:
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".wav") as converted:
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-nostdin",
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-y",
+                            "-i",
+                            audio,
+                            "-c:a",
+                            "pcm_s16le",
+                            converted.name,
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    data, sample_rate = sf.read(
+                        converted.name,
+                        always_2d=False,
+                    )
+            except FileNotFoundError as exc:
+                raise gr.Error(
+                    "Unable to decode the input audio because FFmpeg is not installed."
+                ) from exc
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or "").strip()
+                message = detail or str(soundfile_error)
+                raise gr.Error(
+                    f"Unable to decode the input audio: {message}"
+                ) from exc
+            except (OSError, RuntimeError) as exc:
+                raise gr.Error(f"Unable to decode the input audio: {exc}") from exc
     elif isinstance(audio, tuple) and len(audio) == 2:
         sample_rate, data = audio
     else:
