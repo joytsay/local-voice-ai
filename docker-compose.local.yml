@@ -4,6 +4,7 @@ x-local-source: &local-source
 
 services:
   app:
+    container_name: ivr-app
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
@@ -12,7 +13,11 @@ services:
         source: ${MODELS_DIR:-./models}
         target: /models
 
+  livekit:
+    container_name: ivr-livekit
+
   gradio:
+    container_name: ivr-gradio
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
@@ -21,6 +26,7 @@ services:
         target: /models
 
   stt:
+    container_name: ivr-stt
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
@@ -29,9 +35,13 @@ services:
         target: /models
 
   tts:
+    container_name: ivr-tts
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
       - type: bind
         source: ${MODELS_DIR:-./models}
         target: /models
+
+  llm:
+    container_name: ivr-llm

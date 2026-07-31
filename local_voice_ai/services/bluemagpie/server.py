@@ -96,13 +96,17 @@ DEFAULT_CFG_VALUE = float(os.getenv("BLUEMAGPIE_CFG_VALUE", "2.0"))
 DEFAULT_INFERENCE_TIMESTEPS = int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10"))
 DEFAULT_SEED = int(os.getenv("BLUEMAGPIE_SEED", "1729"))
 FORCED_VOICE = os.getenv("BLUEMAGPIE_FORCE_VOICE", "").strip()
-CLONE_DEVICE = os.getenv("BLUEMAGPIE_CLONE_DEVICE", "cuda").strip() or "cuda"
+CLONE_DEVICE = (
+    os.getenv("BLUEMAGPIE_CLONE_DEVICE", "cuda:0").strip() or "cuda:0"
+)
 ECAPA_MODEL = os.getenv(
     "BLUEMAGPIE_ECAPA_MODEL",
     "speechbrain/spkrec-ecapa-voxceleb",
 )
 MAX_REFERENCE_AUDIO_BYTES = 25 * 1024 * 1024
 VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
+SPEAKER_WINDOW_SECONDS = 6.0
+SPEAKER_EMBEDDING_VERSION = "bluemagpie-ecapa-windowed-6s-v2"
 
 _model = None
 _speaker_table: Optional[dict[str, object]] = None
@@ -356,7 +360,7 @@ def _clone_device() -> str:
             CLONE_DEVICE,
         )
         return "cpu"
-    return CLONE_DEVICE
+    return "cuda:0" if CLONE_DEVICE == "cuda" else CLONE_DEVICE
 
 
 def _get_speaker_encoder():
@@ -381,10 +385,12 @@ def _get_speaker_encoder():
 def _extract_centroid(reference_path: Path) -> torch.Tensor:
     from bluemagpie import extract_speaker_centroid
 
+    device = _clone_device()
     centroid = extract_speaker_centroid(
         str(reference_path),
         ecapa_model=ECAPA_MODEL,
-        device=_clone_device(),
+        device=device,
+        window_s=SPEAKER_WINDOW_SECONDS,
         encoder=_get_speaker_encoder(),
     )
     centroid = torch.as_tensor(centroid).detach().cpu().float().reshape(-1)
@@ -413,15 +419,30 @@ def _saved_clone_centroid(voice: str) -> Optional[torch.Tensor]:
             raise ValueError("cloned voice ID produces an unsafe centroid path")
 
     with _CENTROID_LOCK:
+        centroid = None
         if centroid_path.is_file():
-            centroid = torch.load(
+            cached = torch.load(
                 centroid_path,
                 map_location="cpu",
                 weights_only=True,
             )
-            centroid = torch.as_tensor(centroid).detach().cpu().float().reshape(-1)
-        else:
-            logger.info("extracting speaker centroid for saved clone id=%s", voice)
+            if (
+                isinstance(cached, dict)
+                and cached.get("version") == SPEAKER_EMBEDDING_VERSION
+                and cached.get("embedding") is not None
+            ):
+                centroid = cached["embedding"]
+            elif (
+                profile.get("speaker_embedding_version")
+                == SPEAKER_EMBEDDING_VERSION
+            ):
+                centroid = cached
+
+        if centroid is None:
+            logger.info(
+                "extracting windowed speaker embedding for saved clone id=%s",
+                voice,
+            )
             centroid = _extract_centroid(reference_path)
             centroid_path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
@@ -431,11 +452,18 @@ def _saved_clone_centroid(voice: str) -> Optional[torch.Tensor]:
             ) as temporary_centroid:
                 temporary_centroid_path = Path(temporary_centroid.name)
             try:
-                torch.save(centroid, temporary_centroid_path)
+                torch.save(
+                    {
+                        "version": SPEAKER_EMBEDDING_VERSION,
+                        "embedding": centroid,
+                    },
+                    temporary_centroid_path,
+                )
                 os.replace(temporary_centroid_path, centroid_path)
             finally:
                 temporary_centroid_path.unlink(missing_ok=True)
 
+    centroid = torch.as_tensor(centroid).detach().cpu().float().reshape(-1)
     expected_dim = int(getattr(_model, "speaker_embed_dim", 192))
     if centroid.numel() != expected_dim or not torch.isfinite(centroid).all():
         raise ValueError(
@@ -485,7 +513,8 @@ def _synthesize(
         "max_len": max_len,
         "retry_badcase": retry_badcase,
     }
-    if clone_mode not in {"reference_wav_path", "speaker_centroid"}:
+    valid_clone_modes = {"reference_wav_path", "speaker_centroid"}
+    if clone_mode not in valid_clone_modes:
         raise ValueError(
             "clone_mode must be 'reference_wav_path' or 'speaker_centroid'"
         )
@@ -512,7 +541,15 @@ def _synthesize(
     else:
         forced_voice = FORCED_VOICE or voice
         clone_profile = _clone_profile(forced_voice)
-        if clone_profile is not None and clone_mode == "reference_wav_path":
+        profile_mode = (
+            str(clone_profile.get("mode", ""))
+            if clone_profile is not None
+            else ""
+        )
+        effective_clone_mode = (
+            profile_mode if profile_mode in valid_clone_modes else clone_mode
+        )
+        if clone_profile is not None and effective_clone_mode == "reference_wav_path":
             clone_reference = _clone_file(
                 clone_profile,
                 "reference_wav",

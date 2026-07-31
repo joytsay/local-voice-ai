@@ -57,17 +57,36 @@ PYTHON_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 TORCH_INDEX_URL=https://downl
 
 #### AGX (JETSON)
 ```sh
-ECHO_MODE=1 \
-STT_PROVIDER=whisper \
-STT_LANGUAGE=zh \
-BLUEMAGPIE_DEVICE=cuda \
-BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/78b3cbe95ed6f3097a07b5894444998c3f879075 \
+VOXBOX_DEVICE=cuda \
+VOXBOX_MODEL_PATH= \
+VOXBOX_HF_REPO=Systran/faster-whisper-small \
+VOXBOX_DOWNLOAD_ROOT=/models/whisper \
 PYTHON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu \
 INSTALL_JETSON_INFERENCE=1 \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose up stt
+```
+
+```sh
+BLUEMAGPIE_DEVICE=cuda \
+BLUEMAGPIE_CLONE_DEVICE=cuda \
+BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/4c2c5bcb7e87041a8eaba9df5821ec7a3e1d0c6c \
+PYTHON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu \
 PRESERVE_BASE_TORCH=1 \
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
 COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
-docker compose up --build
+docker compose up --build tts
+```
+
+```sh
+BLUEMAGPIE_DEVICE=cuda \
+BLUEMAGPIE_CLONE_DEVICE=cuda \
+BLUEMAGPIE_MODEL_NAME=/models/hub/models--OpenFormosa--BlueMagpie-TTS/snapshots/4c2c5bcb7e87041a8eaba9df5821ec7a3e1d0c6c \
+PYTHON_BASE=nvcr.io/nvidia/pytorch:24.07-py3-igpu \
+PRESERVE_BASE_TORCH=1 \
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose up --build gradio
 ```
 
 ### Apple Silicon

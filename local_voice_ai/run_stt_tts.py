@@ -51,8 +51,8 @@ DEFAULT_VOICES = [
     "female_voice",
 ]
 CLONE_MODE_CHOICES = [
-    ("A — Reference WAV", "reference_wav_path"),
-    ("B — Speaker centroid", "speaker_centroid"),
+    ("A — Reference WAV (experimental)", "reference_wav_path"),
+    ("B — Speaker embedding (recommended)", "speaker_centroid"),
 ]
 DEFAULT_CLONE_MODE = "speaker_centroid"
 VOICE_CLONE_DIR = Path(os.getenv("VOICE_CLONE_DIR", "/models/voice_clones"))
@@ -68,6 +68,7 @@ _MANIFEST_LOCK = threading.Lock()
 MIN_CLONE_REFERENCE_SECONDS = 3.0
 CENTROID_WINDOW_SECONDS = 6.0
 MIN_CENTROID_CHUNK_SECONDS = 1.0
+SPEAKER_EMBEDDING_VERSION = "bluemagpie-ecapa-windowed-6s-v2"
 _LAST_USED_LOCK = threading.Lock()
 _LAST_USED_STATE: dict[str, str | None] = {
     "ip": None,
@@ -378,6 +379,7 @@ def _save_clone_profile(
             "name": name.strip(),
             "reference_wav": wav_name,
             "speaker_centroid": centroid_name,
+            "speaker_embedding_version": SPEAKER_EMBEDDING_VERSION,
             "provider": "bluemagpie",
             "mode": clone_mode,
         }
@@ -537,7 +539,7 @@ def transcribe_audio_chunks(
     language: str,
     timeout_s: float,
 ) -> str:
-    """Transcribe the same six-second windows used for centroid extraction."""
+    """Transcribe short non-overlapping windows for clone preview text."""
     wav_bytes = _audio_to_wav_bytes(audio)
     data, sample_rate = sf.read(
         io.BytesIO(wav_bytes),
