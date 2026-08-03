@@ -21,7 +21,7 @@ services:
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
-      - ./phonebook.csv:/app/phonebook.csv:ro
+      - ./tsmc.csv:/app/tsmc.csv:ro
       - type: bind
         source: ${MODELS_DIR:-./models}
         target: /models

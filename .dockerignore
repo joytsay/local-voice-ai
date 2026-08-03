@@ -1,7 +1,7 @@
 **
 !Dockerfile
 !pyproject.toml
-!phonebook.csv
+!*.csv
 !docker/
 !docker/**
 !local_voice_ai/

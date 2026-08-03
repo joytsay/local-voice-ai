@@ -72,7 +72,7 @@ services:
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_HF_REPO: ${LLM_HF_REPO:-}
       LLM_PUBLIC_PORT: ${LLM_PORT:-11434}
-      PHONE_BOOK_PATH: /app/phonebook.csv
+      KB_PATH: /app/tsmc.csv
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
       STT_MODEL_OPTIONS: ${STT_MODEL_OPTIONS:-}
       STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}

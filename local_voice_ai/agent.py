@@ -26,8 +26,6 @@ from livekit.agents import (
 from livekit.plugins import openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-from local_voice_ai.llm_prompt import SYSTEM_INSTRUCTIONS_PREFIX
-
 logger = logging.getLogger("agent")
 
 if livekit_agent_url := os.getenv("LIVEKIT_AGENT_URL"):
@@ -45,16 +43,10 @@ PHONE_BOOK_PATH = Path(__file__).resolve().parents[1] / "phonebook.csv"
 
 
 def _load_phone_book() -> str:
-    return " | ".join(
-        line.strip()
-        for line in PHONE_BOOK_PATH.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    )
+    return PHONE_BOOK_PATH.read_text(encoding="utf-8").strip()
 
 
-PHONE_BOOK = _load_phone_book()
-
-SYSTEM_INSTRUCTIONS = SYSTEM_INSTRUCTIONS_PREFIX + PHONE_BOOK
+SYSTEM_INSTRUCTIONS = _load_phone_book()
 
 
 def _load_end_call_tool():
