@@ -888,6 +888,48 @@ def synthesize_text(
         return out.name
 
 
+def stt_llm(
+    audio: Any,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
+    use_llm: bool,
+    llm_base_url: str,
+    llm_model: str,
+    llm_preprompt: str,
+    timeout_s: float,
+) -> tuple[str, str, str]:
+    transcript = transcribe_audio(
+        audio,
+        stt_base_url,
+        stt_model,
+        language,
+        use_vad,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_min_silence_ms,
+        vad_speech_pad_ms,
+        timeout_s,
+    )
+    if not transcript:
+        raise gr.Error("STT returned an empty transcript, so LLM was skipped.")
+    llm_response = ""
+    if use_llm:
+        llm_response = generate_llm_response(
+            transcript,
+            llm_preprompt,
+            llm_base_url,
+            llm_model,
+            timeout_s,
+        )
+    return transcript, transcript, llm_response
+
+
 def round_trip(
     audio: Any,
     stt_base_url: str,
@@ -1105,6 +1147,44 @@ def synthesize_text_request(
     )
 
 
+def stt_llm_request(
+    audio: Any,
+    stt_base_url: str,
+    stt_model: str,
+    language: str,
+    use_vad: bool,
+    vad_threshold: float,
+    vad_min_speech_ms: int,
+    vad_min_silence_ms: int,
+    vad_speech_pad_ms: int,
+    use_llm: bool,
+    llm_base_url: str,
+    llm_model: str,
+    llm_preprompt: str,
+    timeout_s: float,
+    request: gr.Request,
+) -> tuple[str, str, str]:
+    return _run_recorded_action(
+        "STT + LLM" if use_llm else "STT",
+        request,
+        stt_llm,
+        audio,
+        stt_base_url,
+        stt_model,
+        language,
+        use_vad,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_min_silence_ms,
+        vad_speech_pad_ms,
+        use_llm,
+        llm_base_url,
+        llm_model,
+        llm_preprompt,
+        timeout_s,
+    )
+
+
 def round_trip_request(
     audio: Any,
     stt_base_url: str,
@@ -1292,7 +1372,11 @@ def build_demo() -> gr.Blocks:
                     type="filepath",
                     label="Input audio",
                 )
-                round_trip_button = gr.Button("Run all: STT + (LLM) + TTS", variant="primary")
+                stt_llm_button = gr.Button(
+                    "Run only: STT + (LLM)",
+                    variant="primary",
+                )
+                round_trip_button = gr.Button("Run all: STT + (LLM) + TTS", variant="secondary")
                 stt_button = gr.Button("1. STT Input audio speech-to-text", variant="secondary")
                 transcript = gr.Textbox(label="STT text", lines=2)
                 send_stt_to_llm_button = gr.Button(
@@ -1568,6 +1652,26 @@ def build_demo() -> gr.Blocks:
                 timeout_s,
             ],
             outputs=output_audio,
+        )
+        stt_llm_button.click(
+            stt_llm_request,
+            inputs=[
+                audio,
+                stt_base_url,
+                stt_model,
+                language,
+                use_vad,
+                vad_threshold,
+                vad_min_speech_ms,
+                vad_min_silence_ms,
+                vad_speech_pad_ms,
+                use_llm,
+                llm_base_url,
+                llm_model,
+                llm_preprompt,
+                timeout_s,
+            ],
+            outputs=[transcript, llm_transcript, llm_response],
         )
         round_trip_button.click(
             round_trip_request,
