@@ -914,7 +914,7 @@ def round_trip(
     retry_badcase: bool,
     seed: int,
     timeout_s: float,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     transcript = transcribe_audio(
         audio,
         stt_base_url,
@@ -955,50 +955,7 @@ def round_trip(
         seed,
         timeout_s,
     )
-    return transcript, llm_response, output_audio
-
-
-def llm_then_synthesize(
-    text: str,
-    llm_preprompt: str,
-    llm_base_url: str,
-    llm_model: str,
-    tts_base_url: str,
-    tts_model: str,
-    voice: str,
-    clone_mode: str,
-    response_format: str,
-    cfg_value: float,
-    inference_timesteps: int,
-    min_len: int,
-    max_len: int,
-    retry_badcase: bool,
-    seed: int,
-    timeout_s: float,
-) -> tuple[str, str]:
-    llm_response = generate_llm_response(
-        text,
-        llm_preprompt,
-        llm_base_url,
-        llm_model,
-        timeout_s,
-    )
-    output_audio = synthesize_text(
-        llm_response,
-        tts_base_url,
-        tts_model,
-        voice,
-        clone_mode,
-        response_format,
-        cfg_value,
-        inference_timesteps,
-        min_len,
-        max_len,
-        retry_badcase,
-        seed,
-        timeout_s,
-    )
-    return llm_response, output_audio
+    return transcript, transcript, llm_response, output_audio
 
 
 def clone_voice(
@@ -1175,7 +1132,7 @@ def round_trip_request(
     seed: int,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     return _run_recorded_action(
         "STT + LLM + TTS" if use_llm else "STT + TTS",
         request,
@@ -1208,44 +1165,22 @@ def round_trip_request(
     )
 
 
-def llm_then_synthesize_request(
+def generate_llm_response_request(
     text: str,
     llm_preprompt: str,
     llm_base_url: str,
     llm_model: str,
-    tts_base_url: str,
-    tts_model: str,
-    voice: str,
-    clone_mode: str,
-    response_format: str,
-    cfg_value: float,
-    inference_timesteps: int,
-    min_len: int,
-    max_len: int,
-    retry_badcase: bool,
-    seed: int,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str]:
+) -> str:
     return _run_recorded_action(
-        "LLM + TTS",
+        "LLM",
         request,
-        llm_then_synthesize,
+        generate_llm_response,
         text,
         llm_preprompt,
         llm_base_url,
         llm_model,
-        tts_base_url,
-        tts_model,
-        voice,
-        clone_mode,
-        response_format,
-        cfg_value,
-        inference_timesteps,
-        min_len,
-        max_len,
-        retry_badcase,
-        seed,
         timeout_s,
     )
 
@@ -1360,18 +1295,13 @@ def build_demo() -> gr.Blocks:
                 round_trip_button = gr.Button("Run all: STT + (LLM) + TTS", variant="primary")
                 stt_button = gr.Button("1. STT Input audio speech-to-text", variant="secondary")
                 transcript = gr.Textbox(label="STT text", lines=2)
-                tts_button = gr.Button(
-                    "2. TTS text-to-speech",
-                    variant="secondary",
-                )
                 send_stt_to_llm_button = gr.Button(
-                    "3. Send text to LLM prompt",
+                    "2. Send text to LLM prompt",
                     variant="secondary",
                 )
-                output_audio = gr.Audio(
-                    label="TTS output",
-                    type="filepath",
-                    autoplay=True,
+                direct_tts_button = gr.Button(
+                    "TTS text-to-speech",
+                    variant="secondary",
                 )
 
             with gr.Column():
@@ -1385,125 +1315,104 @@ def build_demo() -> gr.Blocks:
                     label="LLM prompt",
                     lines=2,
                 )
+                llm_generate_button = gr.Button(
+                    "3. Send prompt to LLM",
+                    variant="secondary",
+                )
                 llm_response = gr.Textbox(
                     label="LLM response",
                     lines=2,
+                    interactive=True,
                 )
                 llm_tts_button = gr.Button(
-                    "TTS speak LLM response",
+                    "4. TTS speak LLM response",
                     variant="secondary",
                 )
-                output_llm_audio = gr.Audio(
-                    label="LLM response to TTS",
+                output_audio = gr.Audio(
+                    label="TTS output",
                     type="filepath",
                     autoplay=True,
                 )
 
-        gr.Examples(
-            examples=[
-                [
-                    "/app/local_voice_ai/tmpm019xjlb.wav",
-                    None,
+        with gr.Accordion("Dummy inputs", open=False):
+            gr.Examples(
+                examples=[
+                    [
+                        "/app/local_voice_ai/tmpm019xjlb.wav",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/amazingtalkerCut.mp3",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/000002.flac",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/000008.flac",
+                        None,
+                    ],
+                    [
+                        None,
+                        "您好，感謝您來電奇偶科技GeoVision，我是人工智能櫃台，請問需要幫你轉接嗎？",
+                    ],
+                    [
+                        None,
+                        "幫我轉接軟體一 Louis",
+                    ],
                 ],
-                [
-                    "/app/local_voice_ai/amazingtalkerCut.mp3",
-                    None,
-                ],
-                [
-                    "/app/local_voice_ai/000002.flac",
-                    None,
-                ],
-                [
-                    "/app/local_voice_ai/000008.flac",
-                    None,
-                ],
-                [
-                    None,
-                    "您好，感謝您來電奇偶科技GeoVision，我是人工智能櫃台，請問需要幫你轉接嗎？",
-                ],
-                [
-                    None,
-                    "幫我轉接軟體一 Louis",
-                ],
-            ],
-            inputs=[audio, transcript],
-            label="Example",
-        )
+                inputs=[audio, transcript],
+                label="Example",
+            )
 
-        with gr.Accordion("Endpoints and models", open=True):
-            with gr.Row():
-                stt_base_url = gr.Textbox(label="STT base URL", value=DEFAULT_STT_BASE_URL)
-                tts_base_url = gr.Textbox(label="TTS base URL", value=DEFAULT_TTS_BASE_URL)
-                llm_base_url = gr.Textbox(label="LLM base URL", value=DEFAULT_LLM_BASE_URL)
-            with gr.Row():
-                stt_model = gr.Dropdown(
-                    choices=stt_models,
-                    value=selected_stt_model,
-                    allow_custom_value=True,
-                    label="STT model",
-                )
-                llm_model = gr.Dropdown(
-                    choices=llm_models,
-                    value=llm_models[0] if llm_models else None,
-                    allow_custom_value=True,
-                    label="LLM model",
-                )
-                tts_model = gr.Dropdown(
-                    choices=tts_models,
-                    value=tts_models[0],
-                    allow_custom_value=True,
-                    label="TTS model",
-                )
-                voice = gr.Dropdown(
-                    choices=voices,
-                    value=voices[0],
-                    allow_custom_value=True,
-                    label="Voice",
-                )
-            with gr.Row():
-                with gr.Column(scale=3):
-                    clone_audio = gr.Audio(
-                        sources=["microphone", "upload"],
-                        type="filepath",
-                        label="Clone voice reference audio",
-                        show_label=False,
+        with gr.Accordion("Settings", open=True):
+            with gr.Accordion("Endpoints and models", open=True):
+                with gr.Row():
+                    stt_base_url = gr.Textbox(label="STT base URL", value=DEFAULT_STT_BASE_URL)
+                    tts_base_url = gr.Textbox(label="TTS base URL", value=DEFAULT_TTS_BASE_URL)
+                    llm_base_url = gr.Textbox(label="LLM base URL", value=DEFAULT_LLM_BASE_URL)
+                with gr.Row():
+                    stt_model = gr.Dropdown(
+                        choices=stt_models,
+                        value=selected_stt_model,
+                        allow_custom_value=True,
+                        label="STT model",
                     )
-                    clone_audio_transcript = gr.Textbox(
-                        label="Clone audio STT text",
-                        lines=2,
+                    llm_model = gr.Dropdown(
+                        choices=llm_models,
+                        value=llm_models[0] if llm_models else None,
+                        allow_custom_value=True,
+                        label="LLM model",
                     )
-                    clone_mode = gr.Radio(
-                        choices=CLONE_MODE_CHOICES,
-                        value=DEFAULT_CLONE_MODE,
-                        label="Voice cloning mode",
+                    tts_model = gr.Dropdown(
+                        choices=tts_models,
+                        value=tts_models[0],
+                        allow_custom_value=True,
+                        label="TTS model",
                     )
-                with gr.Column(scale=1):
-                    clone_name = gr.Textbox(label="Clone voice name")
-                    clone_voice_button = gr.Button(
-                        "Clone reference audio voice",
-                        variant="secondary",
+                    voice = gr.Dropdown(
+                        choices=voices,
+                        value=voices[0],
+                        allow_custom_value=True,
+                        label="Voice",
                     )
-                    clone_download = gr.DownloadButton("Download cloned voice")
-                    delete_voice_button = gr.Button(
-                        "Delete cloned voice",
-                        variant="stop",
+                with gr.Row():
+                    language = gr.Textbox(label="STT language", value=os.getenv("STT_LANGUAGE", "zh"))
+                    use_llm = gr.Checkbox(value=True, label="Use LLM")
+                    use_vad = gr.Checkbox(value=True, label="Use VAD")
+                    response_format = gr.Dropdown(
+                        choices=["wav", "mp3", "flac", "opus", "aac"],
+                        value="wav",
+                        label="TTS format",
                     )
-            with gr.Row():
-                language = gr.Textbox(label="STT language", value=os.getenv("STT_LANGUAGE", "zh"))
-                use_llm = gr.Checkbox(value=True, label="Use LLM")
-                use_vad = gr.Checkbox(value=True, label="Use VAD")
-                response_format = gr.Dropdown(
-                    choices=["wav", "mp3", "flac", "opus", "aac"],
-                    value="wav",
-                    label="TTS format",
-                )
-                timeout_s = gr.Slider(10, 600, value=180, step=10, label="Timeout seconds")
-            with gr.Accordion("VAD sensitivity", open=False):
+                    timeout_s = gr.Slider(10, 600, value=180, step=10, label="Timeout seconds")
+            with gr.Accordion("VAD sensitivity", open=True):
                 with gr.Row():
                     vad_threshold = gr.Slider(
                         0.05,
                         0.95,
-                        value=0.5,
+                        value=0.05,
                         step=0.05,
                         label="Speech threshold",
                     )
@@ -1528,30 +1437,60 @@ def build_demo() -> gr.Blocks:
                         step=50,
                         label="Speech padding (ms)",
                     )
-            with gr.Row():
-                cfg_value = gr.Slider(
-                    2.0,
-                    2.8,
-                    value=2.0,
-                    step=0.1,
-                    label="CFG value",
-                )
-                inference_timesteps = gr.Slider(
-                    1,
-                    50,
-                    value=int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10")),
-                    step=1,
-                    label="Inference timesteps",
-                )
-                seed = gr.Number(
-                    value=int(os.getenv("BLUEMAGPIE_SEED", "1729")),
-                    precision=0,
-                    label="Seed",
-                )
-            with gr.Row():
-                min_len = gr.Slider(0, 100, value=2, step=1, label="Minimum length")
-                max_len = gr.Slider(100, 4000, value=2000, step=100, label="Maximum length")
-                retry_badcase = gr.Checkbox(value=False, label="Retry abnormal output")
+            with gr.Accordion("TTS parameters", open=True):
+                with gr.Row():
+                    cfg_value = gr.Slider(
+                        2.0,
+                        2.8,
+                        value=2.0,
+                        step=0.1,
+                        label="CFG value",
+                    )
+                    inference_timesteps = gr.Slider(
+                        1,
+                        50,
+                        value=int(os.getenv("BLUEMAGPIE_INFERENCE_TIMESTEPS", "10")),
+                        step=1,
+                        label="Inference timesteps",
+                    )
+                    seed = gr.Number(
+                        value=int(os.getenv("BLUEMAGPIE_SEED", "1729")),
+                        precision=0,
+                        label="Seed",
+                    )
+                with gr.Row():
+                    min_len = gr.Slider(0, 100, value=2, step=1, label="Minimum length")
+                    max_len = gr.Slider(100, 4000, value=2000, step=100, label="Maximum length")
+                    retry_badcase = gr.Checkbox(value=False, label="Retry abnormal output")
+            with gr.Accordion("Clone Voice", open=False):
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        clone_audio = gr.Audio(
+                            sources=["microphone", "upload"],
+                            type="filepath",
+                            label="Clone voice reference audio",
+                            show_label=False,
+                        )
+                        clone_audio_transcript = gr.Textbox(
+                            label="Clone audio STT text",
+                            lines=2,
+                        )
+                        clone_mode = gr.Radio(
+                            choices=CLONE_MODE_CHOICES,
+                            value=DEFAULT_CLONE_MODE,
+                            label="Voice cloning mode",
+                        )
+                    with gr.Column(scale=1):
+                        clone_name = gr.Textbox(label="Clone voice name")
+                        clone_voice_button = gr.Button(
+                            "Clone reference audio voice",
+                            variant="secondary",
+                        )
+                        clone_download = gr.DownloadButton("Download cloned voice")
+                        delete_voice_button = gr.Button(
+                            "Delete cloned voice",
+                            variant="stop",
+                        )
 
         audio.change(
             _input_audio_filename_html,
@@ -1575,7 +1514,7 @@ def build_demo() -> gr.Blocks:
             ],
             outputs=transcript,
         )
-        tts_button.click(
+        direct_tts_button.click(
             synthesize_text_request,
             inputs=[
                 transcript,
@@ -1600,13 +1539,21 @@ def build_demo() -> gr.Blocks:
             outputs=[llm_transcript],
             queue=False,
         )
-        llm_tts_button.click(
-            llm_then_synthesize_request,
+        llm_generate_button.click(
+            generate_llm_response_request,
             inputs=[
                 llm_transcript,
                 llm_preprompt,
                 llm_base_url,
                 llm_model,
+                timeout_s,
+            ],
+            outputs=llm_response,
+        )
+        llm_tts_button.click(
+            synthesize_text_request,
+            inputs=[
+                llm_response,
                 tts_base_url,
                 tts_model,
                 voice,
@@ -1620,7 +1567,7 @@ def build_demo() -> gr.Blocks:
                 seed,
                 timeout_s,
             ],
-            outputs=[llm_response, output_llm_audio],
+            outputs=output_audio,
         )
         round_trip_button.click(
             round_trip_request,
@@ -1651,7 +1598,7 @@ def build_demo() -> gr.Blocks:
                 seed,
                 timeout_s,
             ],
-            outputs=[transcript, llm_response, output_audio],
+            outputs=[transcript, llm_transcript, llm_response, output_audio],
         )
         clone_voice_button.click(
             clone_voice_request,
