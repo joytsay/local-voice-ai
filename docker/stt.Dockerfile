@@ -6,6 +6,8 @@ FROM ${PYTHON_BASE}
 ARG INSTALL_JETSON_INFERENCE=0
 ARG CTRANSLATE2_VERSION=4.5.0
 ARG CUDA_ARCH_LIST=Auto
+ARG DEEPFILTER_VERSION=0.5.6
+ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -21,6 +23,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libopenblas-dev libsndfile1 ninja-build python3-dev
 
 RUN python3 -m pip install --no-cache-dir uv
+
+# DeepFilterNet's native runtime avoids introducing a second PyTorch/torchaudio
+# dependency set into the STT image. It runs on the CPU and ships native Linux
+# binaries for both the amd64 development host and Jetson's arm64 architecture.
+RUN case "${TARGETARCH}" in \
+        amd64) DEEPFILTER_TARGET=x86_64-unknown-linux-musl ;; \
+        arm64) DEEPFILTER_TARGET=aarch64-unknown-linux-gnu ;; \
+        *) echo "Unsupported DeepFilterNet architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && install -d /opt/deepfilter \
+    && curl -fsSL \
+        "https://github.com/Rikorose/DeepFilterNet/releases/download/v${DEEPFILTER_VERSION}/deep-filter-${DEEPFILTER_VERSION}-${DEEPFILTER_TARGET}" \
+        -o /usr/local/bin/deep-filter \
+    && chmod 0755 /usr/local/bin/deep-filter \
+    && curl -fsSL \
+        "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/v${DEEPFILTER_VERSION}/models/DeepFilterNet3_onnx.tar.gz" \
+        -o /opt/deepfilter/DeepFilterNet3_onnx.tar.gz
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
         "faster-whisper==1.0.3" \

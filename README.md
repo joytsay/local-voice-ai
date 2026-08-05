@@ -82,6 +82,13 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml 
 docker compose up stt
 ```
 
+The local Whisper endpoint runs DeepFilterNet3 noise suppression before STT by
+default. It uses the native CPU runtime, while Whisper remains on CUDA. Set
+`STT_DENOISE_ENABLED=0` to disable it globally, or submit `denoise=false` in an
+individual `/v1/audio/transcriptions` multipart request. The optional
+`STT_DENOISE_POST_FILTER=1` setting is more aggressive and may remove quiet
+speech, so it is disabled by default.
+
 ```sh
 BLUEMAGPIE_DEVICE=cuda \
 BLUEMAGPIE_CLONE_DEVICE=cuda \
@@ -175,7 +182,7 @@ See `.env` for the full list. The most important ones:
 
 - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — local-default; override for cloud.
 - `LLAMA_BASE_URL`, `LLAMA_MODEL`, `LLAMA_HF_REPO`, `LLAMA_N_GPU_LAYERS`
-- `STT_PROVIDER` (`nemotron`|`whisper`), `STT_BASE_URL`, `STT_MODEL`, `VOXBOX_MODEL_PATH`, `NEMOTRON_LANGUAGE`
+- `STT_PROVIDER` (`nemotron`|`whisper`), `STT_BASE_URL`, `STT_MODEL`, `VOXBOX_MODEL_PATH`, `NEMOTRON_LANGUAGE`, `STT_DENOISE_ENABLED`
 - `TTS_PROVIDER` (`bluemagpie`|`kokoro`), `TTS_BASE_URL`, `TTS_VOICE`, `BLUEMAGPIE_MODEL_NAME`
 - `WEB_PORT` (default `8080`)
 - `MANAGE_LIVEKIT`, `MANAGE_LLAMA`, `MANAGE_STT`, `MANAGE_TTS` — explicit overrides for the auto-detected "is the URL external?" logic.
@@ -189,3 +196,4 @@ See `.env` for the full list. The most important ones:
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>
 - Kokoro TTS: <https://github.com/hexgrad/kokoro>
 - VoxBox (Whisper fallback): <https://pypi.org/project/vox-box/>
+- DeepFilterNet3: <https://github.com/Rikorose/DeepFilterNet>

@@ -49,6 +49,12 @@ DEFAULT_STT_MODELS = list(
 DEFAULT_TTS_MODELS = [
     "bluemagpie-tts",
 ]
+DEFAULT_USE_DENOISE = os.getenv("STT_DENOISE_ENABLED", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _default_llm_model() -> str | None:
@@ -323,7 +329,15 @@ def _save_browser_settings(
     clone_mode: str,
     language: str,
     use_llm: bool,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -351,7 +365,15 @@ def _save_browser_settings(
         "clone_mode": clone_mode,
         "language": language,
         "use_llm": use_llm,
+        "use_denoise": use_denoise,
+        "denoise_post_filter": denoise_post_filter,
+        "denoise_post_filter_beta": denoise_post_filter_beta,
+        "denoise_attenuation_limit_db": denoise_attenuation_limit_db,
+        "denoise_min_db_thresh": denoise_min_db_thresh,
+        "denoise_max_db_erb_thresh": denoise_max_db_erb_thresh,
+        "denoise_max_db_df_thresh": denoise_max_db_df_thresh,
         "use_vad": use_vad,
+        "no_speech_threshold": no_speech_threshold,
         "vad_threshold": vad_threshold,
         "vad_min_speech_ms": vad_min_speech_ms,
         "vad_min_silence_ms": vad_min_silence_ms,
@@ -446,7 +468,15 @@ def _restore_browser_settings(
             if "use_llm" in settings
             else not bool(settings.get("bypass_llm", False))
         ),
+        bool(settings.get("use_denoise", DEFAULT_USE_DENOISE)),
+        bool(settings.get("denoise_post_filter", False)),
+        settings.get("denoise_post_filter_beta", 0.02),
+        settings.get("denoise_attenuation_limit_db", 100.0),
+        settings.get("denoise_min_db_thresh", -15.0),
+        settings.get("denoise_max_db_erb_thresh", 35.0),
+        settings.get("denoise_max_db_df_thresh", 35.0),
         bool(settings.get("use_vad", True)),
+        settings.get("no_speech_threshold", 0.6),
         settings.get("vad_threshold", 0.5),
         settings.get("vad_min_speech_ms", 250),
         settings.get("vad_min_silence_ms", 2000),
@@ -743,24 +773,98 @@ def generate_llm_response(
     return result
 
 
+def _denoise_audio_for_stt(
+    audio: Any,
+    stt_base_url: str,
+    timeout_s: float,
+    post_filter: bool,
+    post_filter_beta: float,
+    attenuation_limit_db: float,
+    min_db_thresh: float,
+    max_db_erb_thresh: float,
+    max_db_df_thresh: float,
+) -> str:
+    wav_bytes = _audio_to_wav_bytes(audio)
+    url = stt_base_url.rstrip("/") + "/audio/denoise"
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            response = client.post(
+                url,
+                data={
+                    "post_filter": str(bool(post_filter)).lower(),
+                    "post_filter_beta": float(post_filter_beta),
+                    "attenuation_limit_db": float(attenuation_limit_db),
+                    "min_db_thresh": float(min_db_thresh),
+                    "max_db_erb_thresh": float(max_db_erb_thresh),
+                    "max_db_df_thresh": float(max_db_df_thresh),
+                },
+                files={"file": ("input.wav", wav_bytes, "audio/wav")},
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise gr.Error(
+                "The STT server does not have the /audio/denoise endpoint. "
+                "Restart the STT container with the updated whisper_server.py."
+            ) from exc
+        raise gr.Error(f"STT denoise failed: {exc.response.text}") from exc
+    except httpx.HTTPError as exc:
+        raise gr.Error(f"STT denoise request failed: {exc}") from exc
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as output:
+        output.write(response.content)
+        return output.name
+
+
 def transcribe_audio(
     audio: Any,
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
     vad_speech_pad_ms: int,
     timeout_s: float,
-) -> str:
-    wav_bytes = _audio_to_wav_bytes(audio)
+) -> tuple[str, str | None]:
+    denoised_audio = None
+    transcription_audio = audio
+    if use_denoise:
+        denoised_audio = _denoise_audio_for_stt(
+            audio,
+            stt_base_url,
+            timeout_s,
+            denoise_post_filter,
+            denoise_post_filter_beta,
+            denoise_attenuation_limit_db,
+            denoise_min_db_thresh,
+            denoise_max_db_erb_thresh,
+            denoise_max_db_df_thresh,
+        )
+        transcription_audio = denoised_audio
+
+    wav_bytes = _audio_to_wav_bytes(transcription_audio)
     url = stt_base_url.rstrip("/") + "/audio/transcriptions"
     data = {
         "model": stt_model,
         "response_format": "json",
+        # Gradio calls the preview endpoint first so the exact enhanced WAV can
+        # be displayed and reused here without running DeepFilterNet twice.
+        "denoise": "false",
         "vad_filter": str(bool(use_vad)).lower(),
+        "no_speech_threshold": float(
+            no_speech_threshold if use_denoise else 0.6
+        ),
+        "strict_no_speech_filter": str(bool(use_denoise)).lower(),
         "vad_threshold": float(vad_threshold),
         "vad_min_speech_ms": int(vad_min_speech_ms),
         "vad_min_silence_ms": int(vad_min_silence_ms),
@@ -784,8 +888,8 @@ def transcribe_audio(
 
     text = _response_text(response)
     if not text:
-        return ""
-    return text
+        return "", denoised_audio
+    return text, denoised_audio
 
 
 def transcribe_audio_chunks(
@@ -793,7 +897,15 @@ def transcribe_audio_chunks(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -822,13 +934,21 @@ def transcribe_audio_chunks(
             stt_base_url,
             stt_model,
             language,
+            use_denoise,
+            denoise_post_filter,
+            denoise_post_filter_beta,
+            denoise_attenuation_limit_db,
+            denoise_min_db_thresh,
+            denoise_max_db_erb_thresh,
+            denoise_max_db_df_thresh,
             use_vad,
+            no_speech_threshold,
             vad_threshold,
             vad_min_speech_ms,
             vad_min_silence_ms,
             vad_speech_pad_ms,
             timeout_s,
-        )
+        )[0]
         for chunk in chunks
     ]
     return "\n".join(transcripts)
@@ -893,7 +1013,15 @@ def stt_llm(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -903,13 +1031,21 @@ def stt_llm(
     llm_model: str,
     llm_preprompt: str,
     timeout_s: float,
-) -> tuple[str, str, str]:
-    transcript = transcribe_audio(
+) -> tuple[str, str, str, str | None]:
+    transcript, denoised_audio = transcribe_audio(
         audio,
         stt_base_url,
         stt_model,
         language,
+        use_denoise,
+        denoise_post_filter,
+        denoise_post_filter_beta,
+        denoise_attenuation_limit_db,
+        denoise_min_db_thresh,
+        denoise_max_db_erb_thresh,
+        denoise_max_db_df_thresh,
         use_vad,
+        no_speech_threshold,
         vad_threshold,
         vad_min_speech_ms,
         vad_min_silence_ms,
@@ -927,7 +1063,7 @@ def stt_llm(
             llm_model,
             timeout_s,
         )
-    return transcript, transcript, llm_response
+    return transcript, transcript, llm_response, denoised_audio
 
 
 def round_trip(
@@ -935,7 +1071,15 @@ def round_trip(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -956,13 +1100,21 @@ def round_trip(
     retry_badcase: bool,
     seed: int,
     timeout_s: float,
-) -> tuple[str, str, str, str]:
-    transcript = transcribe_audio(
+) -> tuple[str, str, str, str, str | None]:
+    transcript, denoised_audio = transcribe_audio(
         audio,
         stt_base_url,
         stt_model,
         language,
+        use_denoise,
+        denoise_post_filter,
+        denoise_post_filter_beta,
+        denoise_attenuation_limit_db,
+        denoise_min_db_thresh,
+        denoise_max_db_erb_thresh,
+        denoise_max_db_df_thresh,
         use_vad,
+        no_speech_threshold,
         vad_threshold,
         vad_min_speech_ms,
         vad_min_silence_ms,
@@ -997,7 +1149,7 @@ def round_trip(
         seed,
         timeout_s,
     )
-    return transcript, transcript, llm_response, output_audio
+    return transcript, transcript, llm_response, output_audio, denoised_audio
 
 
 def clone_voice(
@@ -1006,7 +1158,15 @@ def clone_voice(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -1030,7 +1190,15 @@ def clone_voice(
             stt_base_url,
             stt_model,
             language,
+            use_denoise,
+            denoise_post_filter,
+            denoise_post_filter_beta,
+            denoise_attenuation_limit_db,
+            denoise_min_db_thresh,
+            denoise_max_db_erb_thresh,
+            denoise_max_db_df_thresh,
             use_vad,
+            no_speech_threshold,
             vad_threshold,
             vad_min_speech_ms,
             vad_min_silence_ms,
@@ -1038,12 +1206,20 @@ def clone_voice(
             timeout_s,
         )
     else:
-        transcript = transcribe_audio(
+        transcript, _ = transcribe_audio(
             audio,
             stt_base_url,
             stt_model,
             language,
+            use_denoise,
+            denoise_post_filter,
+            denoise_post_filter_beta,
+            denoise_attenuation_limit_db,
+            denoise_min_db_thresh,
+            denoise_max_db_erb_thresh,
+            denoise_max_db_df_thresh,
             use_vad,
+            no_speech_threshold,
             vad_threshold,
             vad_min_speech_ms,
             vad_min_silence_ms,
@@ -1086,14 +1262,22 @@ def transcribe_audio_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
     vad_speech_pad_ms: int,
     timeout_s: float,
     request: gr.Request,
-) -> str:
+) -> tuple[str, str | None]:
     return _run_recorded_action(
         "STT",
         request,
@@ -1102,7 +1286,15 @@ def transcribe_audio_request(
         stt_base_url,
         stt_model,
         language,
+        use_denoise,
+        denoise_post_filter,
+        denoise_post_filter_beta,
+        denoise_attenuation_limit_db,
+        denoise_min_db_thresh,
+        denoise_max_db_erb_thresh,
+        denoise_max_db_df_thresh,
         use_vad,
+        no_speech_threshold,
         vad_threshold,
         vad_min_speech_ms,
         vad_min_silence_ms,
@@ -1152,7 +1344,15 @@ def stt_llm_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -1163,7 +1363,7 @@ def stt_llm_request(
     llm_preprompt: str,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str | None]:
     return _run_recorded_action(
         "STT + LLM" if use_llm else "STT",
         request,
@@ -1172,7 +1372,15 @@ def stt_llm_request(
         stt_base_url,
         stt_model,
         language,
+        use_denoise,
+        denoise_post_filter,
+        denoise_post_filter_beta,
+        denoise_attenuation_limit_db,
+        denoise_min_db_thresh,
+        denoise_max_db_erb_thresh,
+        denoise_max_db_df_thresh,
         use_vad,
+        no_speech_threshold,
         vad_threshold,
         vad_min_speech_ms,
         vad_min_silence_ms,
@@ -1190,7 +1398,15 @@ def round_trip_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -1212,7 +1428,7 @@ def round_trip_request(
     seed: int,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str | None]:
     return _run_recorded_action(
         "STT + LLM + TTS" if use_llm else "STT + TTS",
         request,
@@ -1221,7 +1437,15 @@ def round_trip_request(
         stt_base_url,
         stt_model,
         language,
+        use_denoise,
+        denoise_post_filter,
+        denoise_post_filter_beta,
+        denoise_attenuation_limit_db,
+        denoise_min_db_thresh,
+        denoise_max_db_erb_thresh,
+        denoise_max_db_df_thresh,
         use_vad,
+        no_speech_threshold,
         vad_threshold,
         vad_min_speech_ms,
         vad_min_silence_ms,
@@ -1271,7 +1495,15 @@ def clone_voice_request(
     stt_base_url: str,
     stt_model: str,
     language: str,
+    use_denoise: bool,
+    denoise_post_filter: bool,
+    denoise_post_filter_beta: float,
+    denoise_attenuation_limit_db: float,
+    denoise_min_db_thresh: float,
+    denoise_max_db_erb_thresh: float,
+    denoise_max_db_df_thresh: float,
     use_vad: bool,
+    no_speech_threshold: float,
     vad_threshold: float,
     vad_min_speech_ms: int,
     vad_min_silence_ms: int,
@@ -1299,7 +1531,15 @@ def clone_voice_request(
         stt_base_url,
         stt_model,
         language,
+        use_denoise,
+        denoise_post_filter,
+        denoise_post_filter_beta,
+        denoise_attenuation_limit_db,
+        denoise_min_db_thresh,
+        denoise_max_db_erb_thresh,
+        denoise_max_db_df_thresh,
         use_vad,
+        no_speech_threshold,
         vad_threshold,
         vad_min_speech_ms,
         vad_min_silence_ms,
@@ -1438,6 +1678,26 @@ def build_demo() -> gr.Blocks:
                         None,
                     ],
                     [
+                        "/app/local_voice_ai/中央監控站2.mp3",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/中控室.mp3",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/員工檢查哨.mp3",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/大廳.mp3",
+                        None,
+                    ],
+                    [
+                        "/app/local_voice_ai/車輛檢查哨.mp3",
+                        None,
+                    ],
+                    [
                         None,
                         "您好，感謝您來電奇偶科技GeoVision，我是人工智能櫃台，請問需要幫你轉接嗎？",
                     ],
@@ -1483,16 +1743,78 @@ def build_demo() -> gr.Blocks:
                     )
                 with gr.Row():
                     language = gr.Textbox(label="STT language", value=os.getenv("STT_LANGUAGE", "zh"))
-                    use_llm = gr.Checkbox(value=True, label="Use LLM")
                     use_vad = gr.Checkbox(value=True, label="Use VAD")
+                    use_denoise = gr.Checkbox(
+                        value=DEFAULT_USE_DENOISE,
+                        label="Use Denoise",
+                    )
+                    use_llm = gr.Checkbox(value=True, label="Use LLM")
                     response_format = gr.Dropdown(
                         choices=["wav", "mp3", "flac", "opus", "aac"],
                         value="wav",
                         label="TTS format",
                     )
                     timeout_s = gr.Slider(10, 600, value=180, step=10, label="Timeout seconds")
+            with gr.Accordion("Denoise parameters", open=False):
+                with gr.Row():
+                    denoised_audio = gr.Audio(
+                        label="Denoised STT wav",
+                        type="filepath",
+                        interactive=False,
+                    )
+                with gr.Row():
+                    denoise_post_filter = gr.Checkbox(
+                        value=False,
+                        label="Post-filter",
+                        info="Extra residual-noise cleanup; may thin speech.",
+                    )
+                    denoise_post_filter_beta = gr.Slider(
+                        0.0,
+                        0.05,
+                        value=0.02,
+                        step=0.005,
+                        label="Post-filter beta",
+                    )
+                    denoise_attenuation_limit_db = gr.Slider(
+                        0.0,
+                        100.0,
+                        value=10.0,
+                        step=5.0,
+                        label="Attenuation limit (dB)",
+                        info="Lower values retain more original room noise.",
+                    )
+                with gr.Row():
+                    denoise_min_db_thresh = gr.Slider(
+                        -15.0,
+                        35.0,
+                        value=-15.0,
+                        step=1.0,
+                        label="Minimum processing threshold (dB)",
+                    )
+                    denoise_max_db_erb_thresh = gr.Slider(
+                        -15.0,
+                        35.0,
+                        value=35.0,
+                        step=1.0,
+                        label="Maximum ERB threshold (dB)",
+                    )
+                    denoise_max_db_df_thresh = gr.Slider(
+                        -15.0,
+                        35.0,
+                        value=35.0,
+                        step=1.0,
+                        label="Maximum DF threshold (dB)",
+                    )
             with gr.Accordion("VAD sensitivity", open=True):
                 with gr.Row():
+                    no_speech_threshold = gr.Slider(
+                        0.0,
+                        1.0,
+                        value=0.6,
+                        step=0.05,
+                        label="Maximum no-speech probability",
+                        info="Lower values reject more Whisper segments as silence.",
+                    )
                     vad_threshold = gr.Slider(
                         0.05,
                         0.95,
@@ -1589,14 +1911,22 @@ def build_demo() -> gr.Blocks:
                 stt_base_url,
                 stt_model,
                 language,
+                use_denoise,
+                denoise_post_filter,
+                denoise_post_filter_beta,
+                denoise_attenuation_limit_db,
+                denoise_min_db_thresh,
+                denoise_max_db_erb_thresh,
+                denoise_max_db_df_thresh,
                 use_vad,
+                no_speech_threshold,
                 vad_threshold,
                 vad_min_speech_ms,
                 vad_min_silence_ms,
                 vad_speech_pad_ms,
                 timeout_s,
             ],
-            outputs=transcript,
+            outputs=[transcript, denoised_audio],
         )
         direct_tts_button.click(
             synthesize_text_request,
@@ -1660,7 +1990,15 @@ def build_demo() -> gr.Blocks:
                 stt_base_url,
                 stt_model,
                 language,
+                use_denoise,
+                denoise_post_filter,
+                denoise_post_filter_beta,
+                denoise_attenuation_limit_db,
+                denoise_min_db_thresh,
+                denoise_max_db_erb_thresh,
+                denoise_max_db_df_thresh,
                 use_vad,
+                no_speech_threshold,
                 vad_threshold,
                 vad_min_speech_ms,
                 vad_min_silence_ms,
@@ -1671,7 +2009,12 @@ def build_demo() -> gr.Blocks:
                 llm_preprompt,
                 timeout_s,
             ],
-            outputs=[transcript, llm_transcript, llm_response],
+            outputs=[
+                transcript,
+                llm_transcript,
+                llm_response,
+                denoised_audio,
+            ],
         )
         round_trip_button.click(
             round_trip_request,
@@ -1680,7 +2023,15 @@ def build_demo() -> gr.Blocks:
                 stt_base_url,
                 stt_model,
                 language,
+                use_denoise,
+                denoise_post_filter,
+                denoise_post_filter_beta,
+                denoise_attenuation_limit_db,
+                denoise_min_db_thresh,
+                denoise_max_db_erb_thresh,
+                denoise_max_db_df_thresh,
                 use_vad,
+                no_speech_threshold,
                 vad_threshold,
                 vad_min_speech_ms,
                 vad_min_silence_ms,
@@ -1702,7 +2053,13 @@ def build_demo() -> gr.Blocks:
                 seed,
                 timeout_s,
             ],
-            outputs=[transcript, llm_transcript, llm_response, output_audio],
+            outputs=[
+                transcript,
+                llm_transcript,
+                llm_response,
+                output_audio,
+                denoised_audio,
+            ],
         )
         clone_voice_button.click(
             clone_voice_request,
@@ -1712,7 +2069,15 @@ def build_demo() -> gr.Blocks:
                 stt_base_url,
                 stt_model,
                 language,
+                use_denoise,
+                denoise_post_filter,
+                denoise_post_filter_beta,
+                denoise_attenuation_limit_db,
+                denoise_min_db_thresh,
+                denoise_max_db_erb_thresh,
+                denoise_max_db_df_thresh,
                 use_vad,
+                no_speech_threshold,
                 vad_threshold,
                 vad_min_speech_ms,
                 vad_min_silence_ms,
@@ -1754,7 +2119,15 @@ def build_demo() -> gr.Blocks:
             clone_mode,
             language,
             use_llm,
+            use_denoise,
+            denoise_post_filter,
+            denoise_post_filter_beta,
+            denoise_attenuation_limit_db,
+            denoise_min_db_thresh,
+            denoise_max_db_erb_thresh,
+            denoise_max_db_df_thresh,
             use_vad,
+            no_speech_threshold,
             vad_threshold,
             vad_min_speech_ms,
             vad_min_silence_ms,

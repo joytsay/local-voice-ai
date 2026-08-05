@@ -68,6 +68,7 @@ services:
     restart: unless-stopped
     environment:
       STT_LANGUAGE: ${STT_LANGUAGE:-zh}
+      STT_DENOISE_ENABLED: ${STT_DENOISE_ENABLED:-1}
       LLM_MODEL_PATH: ${LLM_MODEL_PATH:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_HF_REPO: ${LLM_HF_REPO:-}
@@ -97,6 +98,7 @@ services:
         INSTALL_JETSON_INFERENCE: ${INSTALL_JETSON_INFERENCE:-0}
         CTRANSLATE2_VERSION: ${CTRANSLATE2_VERSION:-4.5.0}
         CUDA_ARCH_LIST: ${CUDA_ARCH_LIST:-Auto}
+        DEEPFILTER_VERSION: ${DEEPFILTER_VERSION:-0.5.6}
     restart: unless-stopped
     environment:
       STT_LANGUAGE: ${STT_LANGUAGE:-zh}
@@ -107,6 +109,11 @@ services:
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
       VOXBOX_DOWNLOAD_ROOT: ${VOXBOX_DOWNLOAD_ROOT:-/models/whisper}
       STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
+      STT_DENOISE_ENABLED: ${STT_DENOISE_ENABLED:-1}
+      STT_DENOISE_BINARY: ${STT_DENOISE_BINARY:-/usr/local/bin/deep-filter}
+      STT_DENOISE_MODEL: ${STT_DENOISE_MODEL:-/opt/deepfilter/DeepFilterNet3_onnx.tar.gz}
+      STT_DENOISE_POST_FILTER: ${STT_DENOISE_POST_FILTER:-0}
+      STT_DENOISE_TIMEOUT: ${STT_DENOISE_TIMEOUT:-120}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - type: volume
