@@ -1,0 +1,18 @@
+gv.ivr.com {
+	tls {$CADDY_TLS:internal}
+	encode zstd gzip
+	reverse_proxy gradio:7860
+}
+
+gv.ivr.live.com {
+	tls {$CADDY_TLS:internal}
+	encode zstd gzip
+
+	handle /rtc* {
+		reverse_proxy livekit:7880
+	}
+
+	handle {
+		reverse_proxy app:8080
+	}
+}

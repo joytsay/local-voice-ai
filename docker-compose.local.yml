@@ -16,6 +16,9 @@ services:
   livekit:
     container_name: ivr-livekit
 
+  caddy:
+    container_name: ivr-caddy
+
   gradio:
     container_name: ivr-gradio
     <<: *local-source

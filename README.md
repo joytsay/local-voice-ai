@@ -115,6 +115,44 @@ docker compose up --build gradio
 
 The CPU image works as-is. `llama-server` uses Metal automatically through its bundled binary.
 
+### HTTPS reverse proxy (Caddy)
+
+Caddy terminates HTTPS only for these two browser-facing sites:
+
+- `https://gv.ivr.com` proxies Gradio.
+- `https://gv.ivr.live.com` proxies the LiveKit web frontend. Requests under
+  `/rtc` are routed to LiveKit signaling so the HTTPS frontend can connect over
+  `wss://gv.ivr.live.com`.
+
+Configure both DNS names to resolve to the Docker host, then start the `https`
+profile:
+
+```sh
+CADDY_TLS=admin@example.com \
+LIVEKIT_PUBLIC_URL=wss://gv.ivr.live.com \
+LIVEKIT_NODE_IP=203.0.113.10 \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose --profile https up --build
+```
+
+For a private LAN without public DNS or ACME access, use hostnames from your
+local DNS and leave `CADDY_TLS=internal` (the default). Install Caddy's local
+CA certificate on every browser device that must trust the sites. You can copy
+it out of the named data volume through the running service:
+
+```sh
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+```
+
+All other published service endpoints remain on their existing HTTP ports.
+LiveKit media still travels directly through `${LIVEKIT_TCP_PORT:-7881}/tcp`
+and `${LIVEKIT_UDP_PORT:-7882}/udp`, so those ports must remain reachable. Set
+`LIVEKIT_NODE_IP` to the LAN or public address browsers can reach.
+
+Caddy can also run with Gradio alone. The LiveKit frontend hostname remains
+configured but returns an upstream error until the `app` and `livekit` services
+are started.
+
 ## Swapping in cloud providers
 
 Each service has a single "manage" decision driven by its base URL — point it at a remote endpoint and the local subprocess is skipped:

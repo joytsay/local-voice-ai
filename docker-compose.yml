@@ -10,7 +10,8 @@ services:
     environment:
       ECHO_MODE: ${ECHO_MODE:-0}
       DEVICE: ${DEVICE:-cuda}
-      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_URL: ${LIVEKIT_PUBLIC_URL:-ws://livekit:7880}
+      LIVEKIT_AGENT_URL: ws://livekit:7880
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
       STT_PROVIDER: ${STT_PROVIDER:-whisper}
@@ -58,6 +59,24 @@ services:
       - "${LIVEKIT_PORT:-7880}:7880"
       - "${LIVEKIT_TCP_PORT:-7881}:7881"
       - "${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      CADDY_TLS: ${CADDY_TLS:-internal}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+      - "${CADDY_HTTPS_PORT:-443}:443/udp"
+    depends_on:
+      gradio:
+        condition: service_started
 
   gradio:
     build:
@@ -187,3 +206,5 @@ services:
 
 volumes:
   models:
+  caddy_data:
+  caddy_config:

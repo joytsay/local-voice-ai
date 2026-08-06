@@ -20,4 +20,4 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY local_voice_ai ./local_voice_ai
 COPY tsmc.csv ./tsmc.csv
-CMD ["/usr/bin/python3", "-m", "local_voice_ai.run_stt_tts", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["python3", "-m", "local_voice_ai.run_stt_tts", "--host", "0.0.0.0", "--port", "7860"]
