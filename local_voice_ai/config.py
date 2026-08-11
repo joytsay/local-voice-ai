@@ -139,11 +139,10 @@ class Config:
                 else "http://127.0.0.1:8000/v1"
             )
 
-        default_stt_model = (
-            "Systran/faster-whisper-small"
-            if stt_provider == "whisper"
-            else cls.nemotron_model_id
-        )
+        if stt_provider == "whisper":
+            default_stt_model = "Systran/faster-whisper-small"
+        else:
+            default_stt_model = cls.nemotron_model_id
 
         return cls(
             web_host=os.getenv("WEB_HOST", cls.web_host),
@@ -205,6 +204,7 @@ class Config:
                 [
                     os.getenv("NEMOTRON_MODEL_ID", cls.nemotron_model_id),
                     os.getenv("VOXBOX_HF_REPO_ID", cls.voxbox_hf_repo_id),
+                    "Systran/faster-whisper-large-v3",
                 ],
             ),
             tts_model_options=_env_list(

@@ -20,6 +20,10 @@ logging.basicConfig(level=logging.INFO)
 _model: Any = None
 _loaded_model_name: str | None = None
 _MODEL_LOCK = threading.Lock()
+_diarization_pipeline: Any = None
+# CTranslate2 and PyTorch share the same GPU. Serialize both inference paths so
+# concurrent requests cannot create avoidable Jetson memory spikes.
+_DIARIZATION_LOCK = _MODEL_LOCK
 
 _OUTRO_TERM_GROUPS = (
     ("点赞", "點讚", "点讚", "like"),
@@ -288,11 +292,18 @@ def _configured_model_path() -> str | None:
             return str(resolved)
 
     checked = ", ".join(str(candidate) for candidate in candidates)
-    raise FileNotFoundError(
+    message = (
         "VOXBOX_MODEL_PATH does not contain a complete faster-whisper "
         f"snapshot; checked: {checked}. A complete model directory must "
-        "contain model.bin. The local model directory is mounted at /models."
+        "contain model.bin."
     )
+    if _env_flag("VOXBOX_MODEL_PATH_STRICT"):
+        raise FileNotFoundError(message)
+    logger.warning(
+        "%s Falling back to VOXBOX_HF_REPO and VOXBOX_DOWNLOAD_ROOT.",
+        message,
+    )
+    return None
 
 
 def _model_roots() -> list[Path]:
@@ -368,9 +379,194 @@ def _load_model(requested_model: str | None = None) -> Any:
     return _model
 
 
+def _ensure_cuda_runtime() -> None:
+    if not os.getenv("VOXBOX_DEVICE", "cpu").startswith("cuda"):
+        return
+    try:
+        import ctranslate2
+
+        device_count = ctranslate2.get_cuda_device_count()
+    except Exception as exc:
+        raise RuntimeError(
+            "CUDA initialization failed. On Jetson, use an NVIDIA PyTorch "
+            "image tagged -igpu that matches the installed JetPack release."
+        ) from exc
+    if device_count < 1:
+        raise RuntimeError(
+            "No CUDA device is available to CTranslate2. On Jetson, use an "
+            "NVIDIA PyTorch image tagged -igpu that matches JetPack."
+        )
+
+
+def _patch_pyannote_version_check() -> None:
+    """Let pyannote 3.x inspect NVIDIA's PEP 440 Torch version.
+
+    pyannote.audio 3.3.2 uses python-semver for checkpoint compatibility
+    warnings. Jetson's Torch version (for example ``2.4.0a0+...nv24.7``) is
+    valid PEP 440 but not valid SemVer, so model loading otherwise fails before
+    any weights are used.
+    """
+    import pyannote.audio.core.model as model_module
+    import pyannote.audio.core.pipeline as pipeline_module
+    from pyannote.audio.utils.version import check_version as original_check_version
+
+    if getattr(model_module.check_version, "_jetson_compatible", False):
+        return
+
+    def normalize(version: str) -> str:
+        from packaging.version import Version
+
+        release = Version(str(version)).release
+        return ".".join(str(part) for part in (*release, 0, 0)[:3])
+
+    def compatible_check_version(
+        library: str,
+        theirs: str,
+        mine: str,
+        what: str = "Pipeline",
+    ) -> None:
+        original_check_version(
+            library,
+            normalize(theirs),
+            normalize(mine),
+            what=what,
+        )
+
+    compatible_check_version._jetson_compatible = True  # type: ignore[attr-defined]
+    model_module.check_version = compatible_check_version
+    pipeline_module.check_version = compatible_check_version
+
+
+def _load_diarization_pipeline() -> Any:
+    global _diarization_pipeline
+
+    if _diarization_pipeline is not None:
+        return _diarization_pipeline
+
+    try:
+        import torch
+        from pyannote.audio import Pipeline
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Speaker diarization is unavailable in this STT image.",
+        ) from exc
+
+    model_name = os.getenv(
+        "STT_DIARIZATION_MODEL",
+        "pyannote/speaker-diarization-3.1",
+    )
+    token = os.getenv("HF_TOKEN") or None
+    if not token and not Path(model_name).exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "HF_TOKEN is required for pyannote speaker diarization. "
+                "Accept the speaker-diarization-3.1 and segmentation-3.0 "
+                "conditions on Hugging Face first."
+            ),
+        )
+
+    logger.info("loading diarization pipeline %s", model_name)
+    try:
+        _patch_pyannote_version_check()
+        _diarization_pipeline = Pipeline.from_pretrained(
+            model_name,
+            use_auth_token=token,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Unable to load {model_name}: {exc}",
+        ) from exc
+    if _diarization_pipeline is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Unable to load {model_name}; check HF_TOKEN and model access.",
+        )
+
+    device = os.getenv("STT_DIARIZATION_DEVICE", "cuda:0")
+    _diarization_pipeline.to(torch.device(device))
+    logger.info("loaded diarization pipeline %s on %s", model_name, device)
+    return _diarization_pipeline
+
+
+def _speaker_turns(annotation: Any) -> list[dict[str, Any]]:
+    if hasattr(annotation, "speaker_diarization"):
+        annotation = annotation.speaker_diarization
+    return [
+        {"start": float(turn.start), "end": float(turn.end), "speaker": speaker}
+        for turn, _, speaker in annotation.itertracks(yield_label=True)
+    ]
+
+
+def _speaker_for_interval(
+    start: float,
+    end: float,
+    turns: list[dict[str, Any]],
+) -> str:
+    if not turns:
+        return "SPEAKER_UNKNOWN"
+    overlap, selected = max(
+        (
+            (max(0.0, min(end, turn["end"]) - max(start, turn["start"])), turn)
+            for turn in turns
+        ),
+        key=lambda item: item[0],
+    )
+    if overlap > 0.0:
+        return str(selected["speaker"])
+    midpoint = (start + end) / 2.0
+    nearest = min(
+        turns,
+        key=lambda turn: min(
+            abs(midpoint - turn["start"]),
+            abs(midpoint - turn["end"]),
+        ),
+    )
+    return str(nearest["speaker"])
+
+
+def _diarized_transcript(
+    segments: list[Any],
+    turns: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    attributed: list[dict[str, Any]] = []
+    maximum_gap = float(os.getenv("STT_DIARIZATION_MAX_GAP", "1.0"))
+    for segment in segments:
+        words = list(getattr(segment, "words", None) or [])
+        if not words:
+            words = [segment]
+        for word in words:
+            text = str(getattr(word, "word", getattr(word, "text", "")))
+            start = float(getattr(word, "start", segment.start))
+            end = float(getattr(word, "end", segment.end))
+            speaker = _speaker_for_interval(start, end, turns)
+            if (
+                attributed
+                and attributed[-1]["speaker"] == speaker
+                and start - attributed[-1]["end"] <= maximum_gap
+            ):
+                attributed[-1]["text"] += text
+                attributed[-1]["end"] = end
+            else:
+                attributed.append(
+                    {"speaker": speaker, "start": start, "end": end, "text": text}
+                )
+
+    for item in attributed:
+        item["text"] = item["text"].strip()
+    attributed = [item for item in attributed if item["text"]]
+    text = "\n".join(
+        f'{item["speaker"]}: {item["text"]}' for item in attributed
+    )
+    return text, attributed
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     with _MODEL_LOCK:
+        _ensure_cuda_runtime()
         _load_model()
     yield
 
@@ -401,6 +597,7 @@ def health() -> dict[str, str]:
             if denoise_enabled
             else "disabled"
         ),
+        "diarizer": "ready" if _diarization_pipeline is not None else "lazy",
     }
 
 
@@ -521,11 +718,27 @@ async def transcribe(
     minimum_average_log_probability: float = Form(default=-1.0),
     maximum_compression_ratio: float = Form(default=2.4),
     denoise: bool | None = Form(default=None),
+    diarize: bool | None = Form(default=None),
+    min_speakers: int | None = Form(default=None),
+    max_speakers: int | None = Form(default=None),
 ) -> Response:
     if not 0.0 <= no_speech_threshold <= 1.0:
         raise HTTPException(
             status_code=400,
             detail="no_speech_threshold must be between 0 and 1.",
+        )
+    if min_speakers is not None and min_speakers < 1:
+        raise HTTPException(status_code=400, detail="min_speakers must be positive.")
+    if max_speakers is not None and max_speakers < 1:
+        raise HTTPException(status_code=400, detail="max_speakers must be positive.")
+    if (
+        min_speakers is not None
+        and max_speakers is not None
+        and min_speakers > max_speakers
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="min_speakers cannot exceed max_speakers.",
         )
     suffix = Path(file.filename or "audio.wav").suffix or ".wav"
     temporary_path = ""
@@ -595,7 +808,35 @@ async def transcribe(
                     no_speech_threshold,
                     strict_no_speech_filter,
                 )
-        text = "".join(segment.text for segment in segments).strip()
+        diarization_turns: list[dict[str, Any]] = []
+        diarized_segments: list[dict[str, Any]] = []
+        use_diarization = (
+            _env_flag("STT_DIARIZATION_ENABLED")
+            if diarize is None
+            else diarize
+        )
+        if use_diarization:
+            diarization_options = {
+                key: value
+                for key, value in {
+                    "min_speakers": min_speakers,
+                    "max_speakers": max_speakers,
+                }.items()
+                if value is not None
+            }
+            with _DIARIZATION_LOCK:
+                diarization_pipeline = _load_diarization_pipeline()
+                annotation = diarization_pipeline(
+                    str(transcription_path),
+                    **diarization_options,
+                )
+            diarization_turns = _speaker_turns(annotation)
+            text, diarized_segments = _diarized_transcript(
+                segments,
+                diarization_turns,
+            )
+        else:
+            text = "".join(segment.text for segment in segments).strip()
 
         if response_format == "text":
             return PlainTextResponse(text)
@@ -610,6 +851,8 @@ async def transcribe(
                     "language": info.language,
                     "duration": info.duration,
                     "text": text,
+                    "diarization": diarization_turns,
+                    "speaker_segments": diarized_segments,
                     "segments": [
                         {
                             "id": index,
@@ -629,7 +872,11 @@ async def transcribe(
                 status_code=400,
                 detail=f"Unsupported response_format: {response_format}",
             )
-        return JSONResponse({"text": text})
+        response: dict[str, Any] = {"text": text}
+        if use_diarization:
+            response["diarization"] = diarization_turns
+            response["speaker_segments"] = diarized_segments
+        return JSONResponse(response)
     finally:
         if denoise_workspace is not None:
             denoise_workspace.cleanup()

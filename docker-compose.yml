@@ -86,6 +86,8 @@ services:
         PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
     restart: unless-stopped
     environment:
+      STT_PROVIDER: ${STT_PROVIDER:-whisper}
+      STT_BASE_URL: http://stt:8000/v1
       STT_LANGUAGE: ${STT_LANGUAGE:-zh}
       STT_DENOISE_ENABLED: ${STT_DENOISE_ENABLED:-1}
       LLM_MODEL_PATH: ${LLM_MODEL_PATH:-}
@@ -112,19 +114,25 @@ services:
     build:
       context: .
       dockerfile: docker/stt.Dockerfile
+      target: ${STT_BUILD_TARGET:-whisper}
       args:
         PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+        DIARIZATION_PYTHON_BASE: ${DIARIZATION_PYTHON_BASE:-nvcr.io/nvidia/pytorch:24.07-py3-igpu}
         INSTALL_JETSON_INFERENCE: ${INSTALL_JETSON_INFERENCE:-0}
         CTRANSLATE2_VERSION: ${CTRANSLATE2_VERSION:-4.5.0}
         CUDA_ARCH_LIST: ${CUDA_ARCH_LIST:-Auto}
+        CUDA_TOOLKIT_ROOT_DIR: ${CUDA_TOOLKIT_ROOT_DIR:-/usr/local/cuda}
+        TORCHAUDIO_VERSION: ${TORCHAUDIO_VERSION:-2.4.0}
         DEEPFILTER_VERSION: ${DEEPFILTER_VERSION:-0.5.6}
     restart: unless-stopped
     environment:
+      STT_PROVIDER: ${STT_PROVIDER:-whisper}
       STT_LANGUAGE: ${STT_LANGUAGE:-zh}
       STT_BIND_PORT: "8000"
       VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cpu}
       VOXBOX_COMPUTE_TYPE: ${VOXBOX_COMPUTE_TYPE:-}
       VOXBOX_MODEL_PATH: ${VOXBOX_MODEL_PATH:-}
+      VOXBOX_MODEL_PATH_STRICT: ${VOXBOX_MODEL_PATH_STRICT:-0}
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
       VOXBOX_DOWNLOAD_ROOT: ${VOXBOX_DOWNLOAD_ROOT:-/models/whisper}
       STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
@@ -134,6 +142,13 @@ services:
       STT_DENOISE_POST_FILTER: ${STT_DENOISE_POST_FILTER:-0}
       STT_DENOISE_TIMEOUT: ${STT_DENOISE_TIMEOUT:-120}
       HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: ${HF_HOME:-/models/huggingface}
+      STT_DIARIZATION_ENABLED: ${STT_DIARIZATION_ENABLED:-0}
+      STT_DIARIZATION_MODEL: ${STT_DIARIZATION_MODEL:-pyannote/speaker-diarization-3.1}
+      STT_DIARIZATION_DEVICE: ${STT_DIARIZATION_DEVICE:-cuda:0}
+      STT_DIARIZATION_MAX_GAP: ${STT_DIARIZATION_MAX_GAP:-1.0}
+      CUDA_MODULE_LOADING: ${CUDA_MODULE_LOADING:-LAZY}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
     volumes:
       - type: volume
         source: models

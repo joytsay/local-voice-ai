@@ -30,6 +30,8 @@ services:
 
   stt:
     <<: *nvidia-runtime
+    build:
+      target: ${STT_BUILD_TARGET:-whisper-diarization}
     environment:
       VOXBOX_DEVICE: ${VOXBOX_DEVICE:-cuda}
       NVIDIA_VISIBLE_DEVICES: all

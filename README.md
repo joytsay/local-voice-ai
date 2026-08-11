@@ -111,6 +111,42 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml 
 docker compose up --build gradio
 ```
 
+### Faster-whisper with pyannote speaker diarization
+
+The GPU `stt` image combines faster-whisper transcription with optional
+`pyannote/speaker-diarization-3.1` speaker labels:
+
+```sh
+STT_PROVIDER=whisper \
+STT_BUILD_TARGET=whisper-diarization \
+STT_DIARIZATION_ENABLED=1 \
+HF_TOKEN=your_huggingface_token \
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml:docker-compose.local.yml \
+docker compose up --build stt gradio
+```
+
+The default `nvcr.io/nvidia/pytorch:24.07-py3-igpu` base targets Jetson's
+integrated GPU and host JetPack CUDA stack. Set
+`DIARIZATION_PYTHON_BASE` if a different NGC PyTorch release is required
+by the installed driver or JetPack version. Set `INSTALL_JETSON_INFERENCE=1`
+to build CTranslate2 with CUDA for the two faster-whisper choices. Both
+faster-whisper and pyannote run on the GPU. Speaker diarization is selected per
+request with the Gradio checkbox or the `diarize=true` transcription form field.
+
+Before first use, accept the Hugging Face conditions for both
+`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`, then provide
+`HF_TOKEN`. Downloads are cached under `${MODELS_DIR:-./models}/huggingface`.
+The output uses anonymous labels such as `SPEAKER_00`; it does not identify a
+specific known person. The available transcription models are:
+
+- `Systran/faster-whisper-small`
+- `Systran/faster-whisper-large-v3`
+
+Switching between Whisper sizes replaces the loaded Whisper model. The pyannote
+pipeline is loaded lazily on the first diarized request.
+If `VOXBOX_MODEL_PATH` points to an incomplete snapshot, STT logs a warning and
+falls back to `VOXBOX_HF_REPO`; set `VOXBOX_MODEL_PATH_STRICT=1` to fail instead.
+
 ### Apple Silicon
 
 The CPU image works as-is. `llama-server` uses Metal automatically through its bundled binary.

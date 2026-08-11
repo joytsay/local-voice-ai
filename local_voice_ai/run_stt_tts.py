@@ -36,12 +36,14 @@ LLM_PUBLIC_PORT = int(os.getenv("LLM_PUBLIC_PORT", "11434"))
 DEFAULT_STT_BASE_URL = os.getenv("STT_BASE_URL", f"http://127.0.0.1:{STT_PUBLIC_PORT}/v1")
 DEFAULT_TTS_BASE_URL = os.getenv("TTS_BASE_URL", f"http://127.0.0.1:{TTS_PUBLIC_PORT}/v1")
 DEFAULT_LLM_BASE_URL = os.getenv("LLM_BASE_URL", f"http://127.0.0.1:{LLM_PUBLIC_PORT}/v1")
+FASTER_WHISPER_SMALL_MODEL = "Systran/faster-whisper-small"
+FASTER_WHISPER_LARGE_MODEL = "Systran/faster-whisper-large-v3"
 DEFAULT_STT_MODELS = list(
     dict.fromkeys(
         [
-            os.getenv("VOXBOX_HF_REPO", "Systran/faster-whisper-small"),
-            "Systran/faster-whisper-small",
-            "Systran/faster-whisper-large-v3",
+            os.getenv("VOXBOX_HF_REPO", FASTER_WHISPER_SMALL_MODEL),
+            FASTER_WHISPER_SMALL_MODEL,
+            FASTER_WHISPER_LARGE_MODEL,
             "nemotron-3.5-asr-streaming",
         ]
     )
@@ -55,6 +57,10 @@ DEFAULT_USE_DENOISE = os.getenv("STT_DENOISE_ENABLED", "1").strip().lower() in {
     "yes",
     "on",
 }
+DEFAULT_USE_DIARIZATION = os.getenv(
+    "STT_DIARIZATION_ENABLED",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_llm_model() -> str | None:
@@ -293,8 +299,22 @@ def _stt_model_options() -> list[str]:
             continue
 
     if discovered:
-        return sorted(discovered, key=str.casefold)
-    return _csv_env("STT_MODEL_OPTIONS", DEFAULT_STT_MODELS)
+        models = sorted(discovered, key=str.casefold)
+    else:
+        models = _csv_env("STT_MODEL_OPTIONS", DEFAULT_STT_MODELS)
+    return list(
+        dict.fromkeys(
+            [
+                *models,
+                FASTER_WHISPER_SMALL_MODEL,
+                FASTER_WHISPER_LARGE_MODEL,
+            ]
+        )
+    )
+
+
+def _configured_stt_model() -> str:
+    return os.getenv("VOXBOX_HF_REPO", "").strip()
 
 
 def _load_clone_manifest() -> dict[str, Any]:
@@ -407,7 +427,7 @@ def _restore_browser_settings(
     llm_model_choices = _llm_model_choices(llm_base_url)
     llm_model_values = [value for _, value in llm_model_choices]
     voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
-    configured_stt_model = os.getenv("VOXBOX_HF_REPO", "").strip()
+    configured_stt_model = _configured_stt_model()
 
     saved_stt_model = str(settings.get("stt_model", ""))
     stt_model = next(
@@ -818,6 +838,7 @@ def _denoise_audio_for_stt(
 
 def transcribe_audio(
     audio: Any,
+    use_diarization: bool,
     stt_base_url: str,
     stt_model: str,
     language: str,
@@ -860,6 +881,7 @@ def transcribe_audio(
         # Gradio calls the preview endpoint first so the exact enhanced WAV can
         # be displayed and reused here without running DeepFilterNet twice.
         "denoise": "false",
+        "diarize": str(bool(use_diarization)).lower(),
         "vad_filter": str(bool(use_vad)).lower(),
         "no_speech_threshold": float(
             no_speech_threshold if use_denoise else 0.6
@@ -931,6 +953,7 @@ def transcribe_audio_chunks(
     transcripts = [
         transcribe_audio(
             (sample_rate, chunk),
+            False,
             stt_base_url,
             stt_model,
             language,
@@ -1010,6 +1033,7 @@ def synthesize_text(
 
 def stt_llm(
     audio: Any,
+    use_diarization: bool,
     stt_base_url: str,
     stt_model: str,
     language: str,
@@ -1034,6 +1058,7 @@ def stt_llm(
 ) -> tuple[str, str, str, str | None]:
     transcript, denoised_audio = transcribe_audio(
         audio,
+        use_diarization,
         stt_base_url,
         stt_model,
         language,
@@ -1068,6 +1093,7 @@ def stt_llm(
 
 def round_trip(
     audio: Any,
+    use_diarization: bool,
     stt_base_url: str,
     stt_model: str,
     language: str,
@@ -1103,6 +1129,7 @@ def round_trip(
 ) -> tuple[str, str, str, str, str | None]:
     transcript, denoised_audio = transcribe_audio(
         audio,
+        use_diarization,
         stt_base_url,
         stt_model,
         language,
@@ -1208,6 +1235,7 @@ def clone_voice(
     else:
         transcript, _ = transcribe_audio(
             audio,
+            False,
             stt_base_url,
             stt_model,
             language,
@@ -1259,6 +1287,7 @@ def clone_voice(
 
 def transcribe_audio_request(
     audio: Any,
+    use_diarization: bool,
     stt_base_url: str,
     stt_model: str,
     language: str,
@@ -1283,6 +1312,7 @@ def transcribe_audio_request(
         request,
         transcribe_audio,
         audio,
+        use_diarization,
         stt_base_url,
         stt_model,
         language,
@@ -1341,6 +1371,7 @@ def synthesize_text_request(
 
 def stt_llm_request(
     audio: Any,
+    use_diarization: bool,
     stt_base_url: str,
     stt_model: str,
     language: str,
@@ -1369,6 +1400,7 @@ def stt_llm_request(
         request,
         stt_llm,
         audio,
+        use_diarization,
         stt_base_url,
         stt_model,
         language,
@@ -1395,6 +1427,7 @@ def stt_llm_request(
 
 def round_trip_request(
     audio: Any,
+    use_diarization: bool,
     stt_base_url: str,
     stt_model: str,
     language: str,
@@ -1434,6 +1467,7 @@ def round_trip_request(
         request,
         round_trip,
         audio,
+        use_diarization,
         stt_base_url,
         stt_model,
         language,
@@ -1576,7 +1610,7 @@ def build_demo() -> gr.Blocks:
     tts_models = _csv_env("TTS_MODEL_OPTIONS", DEFAULT_TTS_MODELS)
     llm_models = _csv_env("LLM_MODEL_OPTIONS", DEFAULT_LLM_MODELS)
     voices = _voice_options(_csv_env("TTS_VOICE_OPTIONS", DEFAULT_VOICES))
-    configured_stt_model = os.getenv("VOXBOX_HF_REPO", "").strip()
+    configured_stt_model = _configured_stt_model()
     selected_stt_model = (
         configured_stt_model if configured_stt_model in stt_models else stt_models[0]
     )
@@ -1611,6 +1645,11 @@ def build_demo() -> gr.Blocks:
                     sources=["microphone", "upload"],
                     type="filepath",
                     label="Input audio",
+                )
+                use_diarization = gr.Checkbox(
+                    value=DEFAULT_USE_DIARIZATION,
+                    label="Speaker diarization (pyannote 3.1)",
+                    info="Label faster-whisper output as SPEAKER_00, SPEAKER_01, …",
                 )
                 stt_llm_button = gr.Button(
                     "Run only: STT + (LLM)",
@@ -1908,6 +1947,7 @@ def build_demo() -> gr.Blocks:
             transcribe_audio_request,
             inputs=[
                 audio,
+                use_diarization,
                 stt_base_url,
                 stt_model,
                 language,
@@ -1987,6 +2027,7 @@ def build_demo() -> gr.Blocks:
             stt_llm_request,
             inputs=[
                 audio,
+                use_diarization,
                 stt_base_url,
                 stt_model,
                 language,
@@ -2020,6 +2061,7 @@ def build_demo() -> gr.Blocks:
             round_trip_request,
             inputs=[
                 audio,
+                use_diarization,
                 stt_base_url,
                 stt_model,
                 language,
