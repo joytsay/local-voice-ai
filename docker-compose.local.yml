@@ -16,15 +16,13 @@ services:
   livekit:
     container_name: ivr-livekit
 
-  caddy:
-    container_name: ivr-caddy
-
   gradio:
     container_name: ivr-gradio
     <<: *local-source
     volumes:
       - ./local_voice_ai:/app/local_voice_ai
-      - ./tsmc.csv:/app/tsmc.csv:ro
+      - ./knowledge:/app/knowledge:ro
+      - ./docker/ragflow/import_wiki.py:/app/docker/ragflow/import_wiki.py:ro
       - type: bind
         source: ${MODELS_DIR:-./models}
         target: /models
@@ -53,3 +51,13 @@ services:
       - type: bind
         source: ${MODELS_DIR:-./models}
         target: /models
+
+  ragflow-cpu:
+    container_name: ivr-ragflow
+    image: local/ragflow:${RAGFLOW_REF:-v0.26.4}-arm64
+    build:
+      context: .
+      dockerfile: docker/ragflow.Dockerfile
+      args:
+        RAGFLOW_REPOSITORY: ${RAGFLOW_REPOSITORY:-https://github.com/infiniflow/ragflow.git}
+        RAGFLOW_REF: ${RAGFLOW_REF:-v0.26.4}

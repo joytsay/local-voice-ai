@@ -1,3 +1,6 @@
+include:
+  - path: https://github.com/infiniflow/ragflow.git#v0.26.4:docker/docker-compose.yml
+
 services:
   app:
     build:
@@ -60,24 +63,6 @@ services:
       - "${LIVEKIT_TCP_PORT:-7881}:7881"
       - "${LIVEKIT_UDP_PORT:-7882}:7882/udp"
 
-  caddy:
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
-    profiles: ["https"]
-    restart: unless-stopped
-    environment:
-      CADDY_TLS: ${CADDY_TLS:-internal}
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    ports:
-      - "${CADDY_HTTP_PORT:-80}:80"
-      - "${CADDY_HTTPS_PORT:-443}:443"
-      - "${CADDY_HTTPS_PORT:-443}:443/udp"
-    depends_on:
-      gradio:
-        condition: service_started
-
   gradio:
     build:
       context: .
@@ -94,7 +79,14 @@ services:
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_HF_REPO: ${LLM_HF_REPO:-}
       LLM_PUBLIC_PORT: ${LLM_PORT:-11434}
-      KB_PATH: /app/tsmc.csv
+      KB_PATH: /app/knowledge/system-prompt.md
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://ragflow-cpu:9380}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
+      RAGFLOW_DATASET_IDS: ${RAGFLOW_DATASET_IDS:-}
+      RAGFLOW_PAGE_SIZE: ${RAGFLOW_PAGE_SIZE:-8}
+      RAGFLOW_SIMILARITY_THRESHOLD: ${RAGFLOW_SIMILARITY_THRESHOLD:-0.2}
+      RAGFLOW_VECTOR_WEIGHT: ${RAGFLOW_VECTOR_WEIGHT:-0.3}
+      RAGFLOW_MAX_CONTEXT_CHARS: ${RAGFLOW_MAX_CONTEXT_CHARS:-12000}
       VOXBOX_HF_REPO: ${VOXBOX_HF_REPO:-Systran/faster-whisper-small}
       STT_MODEL_OPTIONS: ${STT_MODEL_OPTIONS:-}
       STT_MODEL_ROOTS: ${STT_MODEL_ROOTS:-/models/whisper,/models/voxbox/cache/huggingface}
@@ -109,6 +101,9 @@ services:
           nocopy: true
     ports:
       - "${GRADIO_PORT:-7860}:7860"
+    networks:
+      - default
+      - ragflow
 
   stt:
     build:
@@ -221,5 +216,3 @@ services:
 
 volumes:
   models:
-  caddy_data:
-  caddy_config:

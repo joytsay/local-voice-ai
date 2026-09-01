@@ -19,5 +19,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         gradio httpx soundfile
 
 COPY local_voice_ai ./local_voice_ai
-COPY tsmc.csv ./tsmc.csv
+COPY knowledge ./knowledge
+COPY docker/ragflow/import_wiki.py ./docker/ragflow/import_wiki.py
 CMD ["python3", "-m", "local_voice_ai.run_stt_tts", "--host", "0.0.0.0", "--port", "7860"]

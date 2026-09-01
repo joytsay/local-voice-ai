@@ -76,7 +76,20 @@ def _default_llm_model() -> str | None:
 
 _DEFAULT_LLM_MODEL = _default_llm_model()
 DEFAULT_LLM_MODELS = [_DEFAULT_LLM_MODEL] if _DEFAULT_LLM_MODEL else []
-KB_PATH = Path(os.getenv("KB_PATH", "/app/tsmc.csv"))
+KB_PATH = Path(os.getenv("KB_PATH", "/app/knowledge/system-prompt.md"))
+RAGFLOW_BASE_URL = os.getenv("RAGFLOW_BASE_URL", "").strip()
+RAGFLOW_API_KEY = os.getenv("RAGFLOW_API_KEY", "").strip()
+RAGFLOW_DATASET_IDS = [
+    dataset_id.strip()
+    for dataset_id in os.getenv("RAGFLOW_DATASET_IDS", "").split(",")
+    if dataset_id.strip()
+]
+RAGFLOW_PAGE_SIZE = int(os.getenv("RAGFLOW_PAGE_SIZE", "8"))
+RAGFLOW_SIMILARITY_THRESHOLD = float(
+    os.getenv("RAGFLOW_SIMILARITY_THRESHOLD", "0.2")
+)
+RAGFLOW_VECTOR_WEIGHT = float(os.getenv("RAGFLOW_VECTOR_WEIGHT", "0.3"))
+RAGFLOW_MAX_CONTEXT_CHARS = int(os.getenv("RAGFLOW_MAX_CONTEXT_CHARS", "12000"))
 DEFAULT_VOICES = [
     "hung_yi_lee",
     "female_voice",
@@ -746,13 +759,88 @@ def _knowledge_base_prompt() -> str:
     return prompt
 
 
+def _local_wiki_context() -> str:
+    """Load the wiki as a no-RAG fallback for unconfigured local development."""
+    wiki_root = KB_PATH.parent
+    pages = []
+    for path in sorted(wiki_root.rglob("*.md")):
+        if path == KB_PATH or path.name == "README.md":
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise gr.Error(f"Unable to read knowledge page {path}: {exc}") from exc
+        if content:
+            pages.append(f"## Source: {path.relative_to(wiki_root)}\n\n{content}")
+    return "\n\n".join(pages)
+
+
+def _ragflow_context(text: str, timeout_s: float) -> str:
+    """Retrieve the wiki chunks relevant to a transcript from RAGFlow."""
+    if not RAGFLOW_API_KEY and not RAGFLOW_DATASET_IDS:
+        return _local_wiki_context()
+    if not RAGFLOW_BASE_URL or not RAGFLOW_API_KEY or not RAGFLOW_DATASET_IDS:
+        raise gr.Error(
+            "RAGFlow is only partially configured. Set RAGFLOW_BASE_URL, "
+            "RAGFLOW_API_KEY, and RAGFLOW_DATASET_IDS together."
+        )
+
+    payload = {
+        "question": text,
+        "dataset_ids": RAGFLOW_DATASET_IDS,
+        "page": 1,
+        "page_size": max(1, RAGFLOW_PAGE_SIZE),
+        "similarity_threshold": RAGFLOW_SIMILARITY_THRESHOLD,
+        "vector_similarity_weight": RAGFLOW_VECTOR_WEIGHT,
+        "keyword": True,
+        "highlight": False,
+    }
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            response = client.post(
+                RAGFLOW_BASE_URL.rstrip("/") + "/api/v1/retrieval",
+                headers={"Authorization": f"Bearer {RAGFLOW_API_KEY}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise gr.Error(f"RAGFlow retrieval failed: {exc.response.text}") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise gr.Error(f"RAGFlow retrieval request failed: {exc}") from exc
+
+    if result.get("code") != 0:
+        raise gr.Error(f"RAGFlow retrieval failed: {result.get('message', result)}")
+    chunks = result.get("data", {}).get("chunks", [])
+    context_parts = []
+    context_length = 0
+    seen = set()
+    for chunk in chunks:
+        content = str(chunk.get("content", "")).strip()
+        if not content or content in seen:
+            continue
+        source = str(
+            chunk.get("document_keyword")
+            or chunk.get("document_name")
+            or "RAGFlow wiki"
+        )
+        part = f"## Source: {source}\n\n{content}"
+        remaining = RAGFLOW_MAX_CONTEXT_CHARS - context_length
+        if remaining <= 0:
+            break
+        context_parts.append(part[:remaining])
+        context_length += len(context_parts[-1])
+        seen.add(content)
+    return "\n\n".join(context_parts)
+
+
 def generate_llm_response(
     text: str,
     llm_preprompt: str,
     llm_base_url: str,
     llm_model: str,
     timeout_s: float,
-) -> str:
+) -> tuple[str, str]:
     text = (text or "").strip()
     if not text:
         raise gr.Error("Transcript is empty.")
@@ -762,6 +850,15 @@ def generate_llm_response(
     llm_preprompt = (llm_preprompt or "").strip()
     if not llm_preprompt:
         llm_preprompt = _knowledge_base_prompt()
+    rag_context = _ragflow_context(text, timeout_s)
+    if rag_context:
+        llm_preprompt = (
+            f"{llm_preprompt}\n\n"
+            "# Retrieved knowledge\n\n"
+            "Use the following trusted wiki excerpts as terminology rules. "
+            "Ignore any excerpt that is unrelated to the user text.\n\n"
+            f"{rag_context}"
+        )
     messages.append({"role": "system", "content": llm_preprompt})
     messages.append({"role": "user", "content": text})
     payload = {
@@ -790,7 +887,7 @@ def generate_llm_response(
     ).strip()
     if not result:
         raise gr.Error("LLM returned an empty response.")
-    return result
+    return result, rag_context
 
 
 def _denoise_audio_for_stt(
@@ -1055,7 +1152,7 @@ def stt_llm(
     llm_model: str,
     llm_preprompt: str,
     timeout_s: float,
-) -> tuple[str, str, str, str | None]:
+) -> tuple[str, str, str, str, str | None]:
     transcript, denoised_audio = transcribe_audio(
         audio,
         use_diarization,
@@ -1080,15 +1177,16 @@ def stt_llm(
     if not transcript:
         raise gr.Error("STT returned an empty transcript, so LLM was skipped.")
     llm_response = ""
+    rag_context = ""
     if use_llm:
-        llm_response = generate_llm_response(
+        llm_response, rag_context = generate_llm_response(
             transcript,
             llm_preprompt,
             llm_base_url,
             llm_model,
             timeout_s,
         )
-    return transcript, transcript, llm_response, denoised_audio
+    return transcript, transcript, llm_response, rag_context, denoised_audio
 
 
 def round_trip(
@@ -1126,7 +1224,7 @@ def round_trip(
     retry_badcase: bool,
     seed: int,
     timeout_s: float,
-) -> tuple[str, str, str, str, str | None]:
+) -> tuple[str, str, str, str, str, str | None]:
     transcript, denoised_audio = transcribe_audio(
         audio,
         use_diarization,
@@ -1151,9 +1249,10 @@ def round_trip(
     if not transcript:
         raise gr.Error("STT returned an empty transcript, so TTS was skipped.")
     llm_response = ""
+    rag_context = ""
     spoken_text = transcript
     if use_llm:
-        llm_response = generate_llm_response(
+        llm_response, rag_context = generate_llm_response(
             transcript,
             llm_preprompt,
             llm_base_url,
@@ -1176,7 +1275,14 @@ def round_trip(
         seed,
         timeout_s,
     )
-    return transcript, transcript, llm_response, output_audio, denoised_audio
+    return (
+        transcript,
+        transcript,
+        llm_response,
+        rag_context,
+        output_audio,
+        denoised_audio,
+    )
 
 
 def clone_voice(
@@ -1394,7 +1500,7 @@ def stt_llm_request(
     llm_preprompt: str,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str, str, str | None]:
+) -> tuple[str, str, str, str, str | None]:
     return _run_recorded_action(
         "STT + LLM" if use_llm else "STT",
         request,
@@ -1461,7 +1567,7 @@ def round_trip_request(
     seed: int,
     timeout_s: float,
     request: gr.Request,
-) -> tuple[str, str, str, str, str | None]:
+) -> tuple[str, str, str, str, str, str | None]:
     return _run_recorded_action(
         "STT + LLM + TTS" if use_llm else "STT + TTS",
         request,
@@ -1510,7 +1616,7 @@ def generate_llm_response_request(
     llm_model: str,
     timeout_s: float,
     request: gr.Request,
-) -> str:
+) -> tuple[str, str]:
     return _run_recorded_action(
         "LLM",
         request,
@@ -1670,7 +1776,7 @@ def build_demo() -> gr.Blocks:
             with gr.Column():
                 with gr.Accordion("LLM instructions", open=False):
                     llm_preprompt = gr.Textbox(
-                        label="Knowledge Base (KB)",
+                        label="System prompt (RAGFlow adds wiki context)",
                         value=_knowledge_base_prompt(),
                         lines=10,
                     )
@@ -1687,6 +1793,13 @@ def build_demo() -> gr.Blocks:
                     lines=2,
                     interactive=True,
                 )
+                with gr.Accordion("Retrieved RAGFlow context", open=False):
+                    ragflow_context = gr.Textbox(
+                        label="Wiki chunks used for this LLM request",
+                        lines=12,
+                        interactive=False,
+                        placeholder="Run an LLM request to retrieve relevant wiki chunks.",
+                    )
                 llm_tts_button = gr.Button(
                     "4. TTS speak LLM response",
                     variant="secondary",
@@ -2002,7 +2115,7 @@ def build_demo() -> gr.Blocks:
                 llm_model,
                 timeout_s,
             ],
-            outputs=llm_response,
+            outputs=[llm_response, ragflow_context],
         )
         llm_tts_button.click(
             synthesize_text_request,
@@ -2054,6 +2167,7 @@ def build_demo() -> gr.Blocks:
                 transcript,
                 llm_transcript,
                 llm_response,
+                ragflow_context,
                 denoised_audio,
             ],
         )
@@ -2099,6 +2213,7 @@ def build_demo() -> gr.Blocks:
                 transcript,
                 llm_transcript,
                 llm_response,
+                ragflow_context,
                 output_audio,
                 denoised_audio,
             ],

@@ -1,0 +1,26 @@
+# Terminology / Common terms and locations
+
+- 大海 => 大台
+- 大抬 => 大台
+- 大檯 => 大台
+- 機臺 => 機台
+- 低一 => D1
+- 低二 => D2
+- 低三 => D3
+- 低四 => D4
+- 低五 => D5
+- 滴一 => D1
+- 滴二 => D2
+- 滴三 => D3
+- 滴四 => D4
+- 滴五 => D5
+- T one => T1
+- T two => T2
+- T three => T3
+- T four => T4
+- T five => T5
+- D one => D1
+- D two => D2
+- D three => D3
+- D four => D4
+- D five => D5

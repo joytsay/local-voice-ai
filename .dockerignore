@@ -6,6 +6,8 @@
 !docker/**
 !local_voice_ai/
 !local_voice_ai/**
+!knowledge/
+!knowledge/**
 !frontend/
 !frontend/**
 
