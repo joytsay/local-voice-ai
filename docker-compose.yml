@@ -213,6 +213,38 @@ services:
           nocopy: true
     ports:
       - "${LLM_PORT:-11434}:8080"
+    networks:
+      - default
+      - ragflow
+
+  embedding:
+    build:
+      context: .
+      dockerfile: ${LLM_DOCKERFILE:-docker/llm.Dockerfile}
+      args:
+        LLAMA_IMAGE: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+        LLAMA_JETSON_BASE: ${LLAMA_JETSON_BASE:-nvcr.io/nvidia/pytorch:24.07-py3-igpu}
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-b7205}
+        LLAMA_CPP_CUDA_ARCHITECTURES: ${LLAMA_CPP_CUDA_ARCHITECTURES:-87}
+    profiles: ["embedding"]
+    restart: unless-stopped
+    environment:
+      LLM_HF_REPO: ${EMBEDDING_HF_REPO:-Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0}
+      LLM_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding-0.6b}
+      LLM_EMBEDDING: "1"
+      LLM_POOLING: ${EMBEDDING_POOLING:-last}
+      GPU_LLAMA_N_GPU_LAYERS: ${EMBEDDING_N_GPU_LAYERS:-99}
+    volumes:
+      - type: volume
+        source: models
+        target: /models
+        volume:
+          nocopy: true
+    ports:
+      - "${EMBEDDING_PORT:-11435}:8080"
+    networks:
+      - default
+      - ragflow
 
 volumes:
   models:

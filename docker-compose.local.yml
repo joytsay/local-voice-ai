@@ -52,6 +52,13 @@ services:
         source: ${MODELS_DIR:-./models}
         target: /models
 
+  embedding:
+    container_name: ivr-embedding
+    volumes:
+      - type: bind
+        source: ${MODELS_DIR:-./models}
+        target: /models
+
   ragflow-cpu:
     container_name: ivr-ragflow
     image: local/ragflow:${RAGFLOW_REF:-v0.26.4}-arm64

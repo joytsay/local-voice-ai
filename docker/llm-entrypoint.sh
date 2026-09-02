@@ -16,6 +16,14 @@ if [ -n "${GPU_LLAMA_N_GPU_LAYERS:-}" ]; then
     set -- "$@" --n-gpu-layers "${GPU_LLAMA_N_GPU_LAYERS}"
 fi
 
+if [ "${LLM_EMBEDDING:-0}" = "1" ]; then
+    set -- "$@" --embedding
+fi
+
+if [ -n "${LLM_POOLING:-}" ]; then
+    set -- "$@" --pooling "${LLM_POOLING}"
+fi
+
 if [ -n "${LLM_MODEL_PATH:-}" ]; then
     if [ ! -f "${LLM_MODEL_PATH}" ]; then
         echo "LLM_MODEL_PATH does not exist inside the container: ${LLM_MODEL_PATH}" >&2
